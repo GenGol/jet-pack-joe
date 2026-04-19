@@ -1039,6 +1039,73 @@ identical in mechanism to fans and vertical fields. The `ADD [DI+4], 0x0302` and
 `INT 62h DX=4` calls are for the JAM driver's display list management (the captive
 sprite rendering), while the visual force field effect is entirely tile-based.
 
+### Fix 9: Cage collision walls and disappear animation
+
+**Collision system (from GAME.EXE cage update at 0x142F):**
+
+The cage creates invisible walls using the collision bitmap system:
+1. `DRAW_COLLISION` (0x045A) with AX=0x0D (shape 13), BL=1 — writes cage walls to bitmap
+2. `CHECK_COLLISION` (0x043C) with AX=0x0E (shape 14), BL=0 — checks if Joe overlaps edges
+
+**SH00.DAT shape 13 (cage walls — written to collision bitmap):**
+```
+Two 2-pixel-wide vertical walls, 18 rows tall (half-res):
+Left wall at cols 1-2, Right wall at cols 21-22
+##..................##
+##..................##
+(repeated 18 rows)
+```
+
+**SH00.DAT shape 14 (cage edge detection — checked against Joe):**
+```
+Two 1-pixel-wide edge columns, 18 rows tall (half-res):
+#......................#
+#......................#
+(repeated 18 rows)
+```
+
+Shape 13 blocks Joe from entering the cage. Shape 14 detects when Joe touches the
+cage edge, triggering the disappear sequence.
+
+**Disappear sequence (from cage update at 0x1452):**
+
+When CHECK_COLLISION detects Joe touching the cage edge:
+1. `switch_state[switch_id] = 0` — turns off the cage's switch
+2. Spawns a new disappear animation object via handler at 0x1F18
+3. The cage object deactivates next frame (switch is OFF → `MOV [DI], 0`)
+
+**Disappear animation handler (0x1F18):**
+
+A separate object that runs the 17-frame dissolve animation:
+- Init (AX=0 at 0x1F35): allocates object slot, inherits sprite handle and tile
+  position from the cage, sets update handler to self (0x1F18), frame counter = 0
+- Update (AX=2 at 0x1F87): advances frame counter each tick
+
+**Disappear animation frames (DS:0x3389, 17 frames via MODIFY_FOREGROUND_MAP):**
+```
+Frame  0: center column = tile 213, sides = 0 (empty)
+Frame  1: center column = tile 214, sides = 0
+Frame  2: center column = tile 215, sides = 0
+Frame  3: center = 214, sides = 234/235 (flash expands outward)
+Frame  4: all = 215/216 (alternating flash)
+Frame  5: all = 214/215
+Frame  6: all = 215/216 (flash cycle continues)
+Frame  7: all = 214/215
+Frame  8: all = 215/216
+Frame  9: all = 214/215
+Frame 10: all = tile 217 (solid fade)
+Frame 11: all = tile 218 (darker fade)
+Frame 12: top = 236, mid = 218, bot = 237 (dissolve pattern)
+          ← FREE_SPRITE (0x03B1) removes captive character sprite
+Frame 13: top = 238, mid = 218, bot = 239 (dissolve continues)
+Frame 14: mid = 218, top/bot = 0 (clearing)
+Frame 15: mid = 219, top/bot = 0 (final fade)
+Frame 16: all = 0 (cage completely gone)
+```
+
+At frame 17: object deactivates, decrements captive count at DS:0x305F.
+If captive count reaches 0, sets level complete flag at DS:0x23BA.
+
 **JAM Driver Architecture (partial, discovered during investigation):**
 
 The JAM driver is a custom Mode X VGA rendering engine embedded in GAME.EXE:
