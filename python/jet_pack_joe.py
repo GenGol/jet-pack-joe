@@ -668,6 +668,9 @@ class JetPackJoe:
             elif ot == 10:  # cage — captive sprite from param[2]
                 if len(obj["params"]) >= 3 and obj["params"][2] < len(self.sprites):
                     sp = self.sprites[obj["params"][2]]
+                    # Cage handler adds +23,+10 offset (from GAME.EXE init at 0x13EC)
+                    surface.blit(sp["surf"], (x + 23 + sp["x_off"], y + 10 + sp["y_off"]))
+                    sp = None  # already drawn, skip generic draw
             elif ot == 17:  # toggle_switch
                 sp = self.sprites[23]
             elif ot == 14:  # sentry — sprites 29-32

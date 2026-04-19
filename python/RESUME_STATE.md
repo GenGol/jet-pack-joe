@@ -903,7 +903,7 @@ Located in debug section starting around 0x10A8E:
      - fan_1/fan_3: forward rotation (frames 0→1→2)
      - fan_2/fan_4: reverse rotation (frames 0→2→1)
      - Animation tables decoded from DS:0x3257/0x325D/0x3263/0x3269
-   - **Cage (type 10)**: renders captive sprite from param[2]
+   - **Cage (type 10)**: renders captive sprite from param[2] with +23,+10 offset ✓
    - **Other objects**: sentry (14), glow_ball (13) — basic sprite rendering only
    - **Not yet implemented**: doors (5), horiz_field (9), generators (11/12/20),
      teleporter (19), sensor_switch (18), plates (15/16), toggle_switch (17)
@@ -957,6 +957,13 @@ Located in debug section starting around 0x10A8E:
   - fan_1/fan_2: fan tiles in FOREGROUND map (bg = tile 341) → store animated
     tiles as fg_overrides, render_foreground draws them after Joe with colorkey
     so fan housing covers Joe but dark interior shows Joe through
+
+### Fix 7: Cage captive sprite positioning
+- Captive characters in cages were drawn at tile top-left (0,5) instead of centered
+- Traced cage handler init at 0x13E4 in GAME.EXE: `ADD CX, 23; ADD DX, 10`
+- The cage handler adds +23px X and +10px Y offset to center the sprite in the cage area
+- Fix: apply the same offset when drawing cage sprites
+- Room 4 cage: sprite now at (23,15) instead of (0,5) — matches dosbox screenshot
 
 ### Key addresses discovered this session:
 - MODIFY_FOREGROUND_MAP: 0x04B4 — writes tile values to foreground map at DS:0x05D7
