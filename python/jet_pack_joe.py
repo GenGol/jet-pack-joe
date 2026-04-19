@@ -665,12 +665,26 @@ class JetPackJoe:
                 state_bit = self.switch_state[switch_id] & 1
                 obj["fg_tile"] = base_tile + state_bit
                 continue
-            elif ot == 10:  # cage — captive sprite from param[2]
+            elif ot == 10:  # cage — captive sprite + force field tile animation
                 if len(obj["params"]) >= 3 and obj["params"][2] < len(self.sprites):
                     sp = self.sprites[obj["params"][2]]
-                    # Cage handler adds +23,+10 offset (from GAME.EXE init at 0x13EC)
-                    surface.blit(sp["surf"], (x + 23 + sp["x_off"], y + 10 + sp["y_off"]))
-                    sp = None  # already drawn, skip generic draw
+                    cx, cy = x + 23, y + 10
+                    surface.blit(sp["surf"], (cx + sp["x_off"], cy + sp["y_off"]))
+                    # Force field: 3x3 tile replacement, 4 frames (from DS:0x3AF5)
+                    # Tiles: 232, 233, 252, 253 cycling
+                    ff_tiles = [232, 233, 252, 253]
+                    frame = (obj["timer"] // 4) % 4
+                    ti = ff_tiles[frame]
+                    col = obj["params"][0] % MAP_COLS
+                    row = obj["params"][0] // MAP_COLS
+                    if ti < len(self.tile_surfs):
+                        ts = self.tile_surfs[ti]
+                        ts.set_colorkey((0, 0, 0))
+                        for dr in range(3):
+                            for dc in range(3):
+                                surface.blit(ts, ((col + dc) * TILE_W, (row + dr) * TILE_H))
+                        ts.set_colorkey(None)
+                    sp = None
             elif ot == 17:  # toggle_switch
                 sp = self.sprites[23]
             elif ot == 14:  # sentry — sprites 29-32

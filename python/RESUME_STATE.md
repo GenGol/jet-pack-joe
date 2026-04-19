@@ -903,7 +903,7 @@ Located in debug section starting around 0x10A8E:
      - fan_1/fan_3: forward rotation (frames 0→1→2)
      - fan_2/fan_4: reverse rotation (frames 0→2→1)
      - Animation tables decoded from DS:0x3257/0x325D/0x3263/0x3269
-   - **Cage (type 10)**: renders captive sprite from param[2] with +23,+10 offset ✓
+   - **Cage (type 10)**: renders captive sprite with +23,+10 offset + force field tile animation (tiles 232,233,252,253) ✓
    - **Other objects**: sentry (14), glow_ball (13) — basic sprite rendering only
    - **Not yet implemented**: doors (5), horiz_field (9), generators (11/12/20),
      teleporter (19), sensor_switch (18), plates (15/16), toggle_switch (17)
@@ -965,6 +965,101 @@ Located in debug section starting around 0x10A8E:
 - Fix: apply the same offset when drawing cage sprites
 - Room 4 cage: sprite now at (23,15) instead of (0,5) — matches dosbox screenshot
 
+### Fix 8: Cage force field animation
+**Discovery process:**
+
+The dosbox screenshot showed a colorful sparkle/dot pattern surrounding the captive character
+in the cage. Initial attempts to find this data included:
+
+1. **Searching DS00.DAT** (38928 bytes, "display set") — Found only palette fade tables,
+   not sprite data. The first 6 words are section offsets to fade/palette effect data.
+
+2. **Tracing the JAM driver INT 62h handler** — The cage init calls `INT 62h` with
+   `AX=0x7D, DX=0x0B` to allocate a display object. The handler is in the JAM driver
+   code segment (around 0x4574+). The driver manages Mode X rendering, double-buffering,
+   and a display list of sprites/objects.
+
+3. **Analyzing the display object lifecycle:**
+   - Init allocates display object: `INT 62h DX=0x0B, AX=0x7D`
+   - Result + `[DS:0x3065]` (display set base) stored at `[DI+4]`
+   - `ALLOC_SPRITE` (0x0378) places captive sprite at slot 7 with +23,+10 offset
+   - Init calls `0x02DC` which triggers `INT 62h DX=4` (render/update display list)
+   - Update cycles `[DI+4]` by adding 0x0302 (770 bytes) per frame
+   - Frame counter at `[DI+0x1C]` cycles 0-3 via `INC; AND 3`
+
+4. **Red herring: display object frame cycling** — The `ADD [DI+4], 0x0302` appeared to
+   cycle through pre-rendered frames in the JAM driver's display buffer. This led to
+   searching for 770-byte sprite frames in DS00.DAT and the EXE, which found nothing.
+
+5. **Breakthrough: reading the FULL update handler** — After the frame cycling code at
+   0x146F-0x147E, the update continues at 0x147F with:
+   ```asm
+   MOV CX, [DI+0x0A]    ; tile position (from level data)
+   MOV BX, 0x3AF5        ; animation table address in DS!
+   CALL 0x04B4           ; MODIFY_FOREGROUND_MAP
+   ```
+   This is the SAME tile replacement mechanism used by fans and vertical fields!
+
+**Force field animation table (DS:0x3AF5):**
+```
+Frame offsets: [0x3AFD, 0x3B23, 0x3B49, 0x3B6F]
+
+Frame 0: 9 tiles, all set to tile 232
+Frame 1: 9 tiles, all set to tile 233
+Frame 2: 9 tiles, all set to tile 252
+Frame 3: 9 tiles, all set to tile 253
+
+Tile positions (3×3 grid): 0,1,2 / 20,21,22 / 40,41,42
+(same layout as fans — offsets 0-2 = row 0, +20 = row 1, +40 = row 2)
+```
+
+Each frame fills the entire 3×3 grid with a SINGLE tile index. The tiles themselves
+(232, 233, 252, 253 in BK00.DAT) contain the sparkle dot patterns in different
+positions, creating the animation effect when cycled.
+
+**Tiles used:**
+- Tile 232: Sparkle pattern variant A (colored dots on black)
+- Tile 233: Sparkle pattern variant B
+- Tile 252: Sparkle pattern variant C
+- Tile 253: Sparkle pattern variant D
+
+These tiles are drawn with colorkey (black = transparent) over the captive sprite,
+so the sparkle dots appear on top of the character while the character shows through
+the black areas.
+
+**Key lesson:** The force field is NOT a special JAM driver effect or procedurally
+generated pattern. It's a standard tile replacement animation using MODIFY_FOREGROUND_MAP,
+identical in mechanism to fans and vertical fields. The `ADD [DI+4], 0x0302` and
+`INT 62h DX=4` calls are for the JAM driver's display list management (the captive
+sprite rendering), while the visual force field effect is entirely tile-based.
+
+**JAM Driver Architecture (partial, discovered during investigation):**
+
+The JAM driver is a custom Mode X VGA rendering engine embedded in GAME.EXE:
+
+- **Entry point:** INT 62h handler, dispatches on DX register
+- **Functions identified:**
+  - DX=0x03: VSync wait / timing
+  - DX=0x04: Render/update display list
+  - DX=0x0B: Allocate display object (AX = size/type parameter)
+- **Display list:** Array of sprite entries in driver memory, each with position,
+  sprite index, and visibility flag
+- **Double buffering:** Two video pages toggled via `XOR SI, 1` at 0x47A8
+- **Tile renderer (0x4798):** Two-pass system:
+  - Pass 1: Draw background tiles from screen_map, mark changed positions
+  - Pass 2: For each position, check foreground_map:
+    - fg == 0 or 0xFF → draw background tile
+    - fg == 0xFE (254) → draw dither blend (special handling)
+    - Any other fg → draw foreground tile REPLACING background
+- **Screen map:** DS:0x0357 (320 words, background tile indices)
+- **Foreground map:** DS:0x05D7 (320 words, overlay tile indices)
+  - Contiguous with screen map: 0x0357 + 0x280 = 0x05D7
+- **Display set (DS00.DAT):** Loaded into driver memory, contains palette fade
+  tables and effect data. Base address stored at DS:0x3065.
+- **Sprite rendering:** Sprites from SP00.DAT are placed in the display list
+  via ALLOC_SPRITE (0x0378), which converts centered coords to screen coords
+  (`ADD CX, 160; ADD DX, 96`) then calls the driver at 0x4625.
+
 ### Key addresses discovered this session:
 - MODIFY_FOREGROUND_MAP: 0x04B4 — writes tile values to foreground map at DS:0x05D7
 - MODIFY_SCREEN_MAP: 0x04D2 — writes to screen map at DS:0x0357 (skips if fg exists)
@@ -972,6 +1067,15 @@ Located in debug section starting around 0x10A8E:
 - Fan animation tables: DS:0x3257 (fan_1), 0x325D (fan_2), 0x3263 (fan_3), 0x3269 (fan_4)
 - JAM driver tile renderer: 0x4798 (second pass at 0x4828 handles fg tile selection)
 - Switch CHECK_COLLISION call: 0x1BF9 with AX=4 (shape), BX=1 (filter), CX/DX=position
+- Cage handler: 0x1364 (init at 0x1393, update at 0x140F)
+- Cage sprite offset: 0x13ED (ADD CX, 23; ADD DX, 10)
+- Cage force field animation table: DS:0x3AF5 (4 frames: tiles 232, 233, 252, 253)
+- Cage force field MODIFY_FOREGROUND_MAP call: 0x1485
+- ALLOC_SPRITE: 0x0378 (converts centered→screen coords, calls JAM driver at 0x4625)
+- Display list update: 0x02DC (calls INT 62h DX=4)
+- JAM driver INT 62h entry: ~0x4599 (saves registers, dispatches on DX)
+- JAM driver double-buffer toggle: 0x47A8 (XOR SI, 1)
+- Display set base: DS:0x3065 (set at runtime when DS00.DAT is loaded)
 
 ## REVERSE ENGINEERING METHODOLOGY
 
