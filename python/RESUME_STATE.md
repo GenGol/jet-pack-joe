@@ -873,28 +873,98 @@ Located in debug section starting around 0x10A8E:
 - Lives system ✓
 - Window scale 3× (960×624) ✓
 - Nudge system for sliding into tight passages (±2,±4,±6 pixels) ✓
+- **Switch detection** using SH00.DAT collision shape overlap (entry 4) ✓
+- **Object positions** using tile top-left matching BLOCK_TO_XY ✓
+- **Fan animations (types 1-4)** — 3×3 tile replacement, 3 frames ✓
+  - fan_3/fan_4 (brown): bg layer fans, drawn before Joe (opaque)
+  - fan_1/fan_2 (pink/grey): fg layer fans, drawn after Joe (colorkey)
 
 ### NOT YET IMPLEMENTED:
 0. **Collision sprites (SH00.DAT)** — Joe's collision shape DONE ✓, enemy shapes still needed
    - SH00.DAT fully decoded: 258-entry offset table, scan pattern format documented above
    - Joe uses entry 0 (14×15 half-res rounded rectangle, gun barrel excluded)
+   - Switch uses entry 4 (4×2 half-res at offset +2,+2)
    - Enemy collision shapes need to be decoded per-entity (trace each handler's AX value)
 1. **Object/entity system** — IN PROGRESS
    - LV11.DAT parsing done, objects loaded per room, switch_state[256] array added
-   - **Switch system (types 6/7) — WORKING:**
-     - Toggle: Joe touches switch → flips switch_state[switch_id] (0 ↔ 0xFF)
+   - **Switch system (types 6/7) — WORKING ✓:**
+     - Detection uses CHECK_COLLISION with SH00.DAT shape 4 (matching original 0x043C)
+     - Toggle: Joe's collision shape overlaps switch shape → flips switch_state[switch_id]
      - Visual: overrides foreground tile (base from original fg data, +0=ON, +1=OFF)
      - Tiles: 230/231 (left), 250/251 (right) — base determined from fg map data
-     - Small tweak still needed (noted by user)
-   - **Vertical field (type 8) — WORKING:**
+   - **Vertical field (type 8) — WORKING ✓:**
      - Checks switch_state[switch_id] — draws only when ON (non-zero)
      - 4-frame tile animation: tiles 80-83, 100-103, 120-123, 140-143, 160-163, 180-183
      - Drawn with colorkey at field's column between solid walls
+   - **Fan system (types 1-4) — WORKING ✓:**
+     - 3×3 tile replacement animation via MODIFY_FOREGROUND_MAP (0x04B4)
+     - fan_1/fan_2: tiles 200-248 (pink/grey), foreground layer, colorkey over Joe
+     - fan_3/fan_4: tiles 440-488 (brown), background layer, opaque before Joe
+     - fan_1/fan_3: forward rotation (frames 0→1→2)
+     - fan_2/fan_4: reverse rotation (frames 0→2→1)
+     - Animation tables decoded from DS:0x3257/0x325D/0x3263/0x3269
    - **Cage (type 10)**: renders captive sprite from param[2]
    - **Other objects**: sentry (14), glow_ball (13) — basic sprite rendering only
-   - **Not yet implemented**: fans (1-4), doors (5), horiz_field (9), generators (11/12/20),
+   - **Not yet implemented**: doors (5), horiz_field (9), generators (11/12/20),
      teleporter (19), sensor_switch (18), plates (15/16), toggle_switch (17)
    - **Not yet implemented gameplay**: field killing Joe, enemy AI, door blocking
+
+## SESSION 3 FIXES (2026-04-19)
+
+### Fix 1: Sprite sheet colors
+- `make_sprite_sheet.py` was saving with alpha channel (pygame-ce SRCALPHA quirk)
+- Fix: use `depth=24` for the sheet surface to force RGB-only PNG output
+
+### Fix 2: Tile sheet created
+- `make_tile_sheet.py` generates all 682 tiles at 2× scale with index labels
+- Uses `depth=24` to avoid same alpha issue
+
+### Fix 3: Foreground rendering bug (Joe hidden in room 8)
+- `render_foreground` had a "pipe interior" heuristic that drew background tiles
+  opaquely over Joe for any tile between pipe-flagged rows in the same column
+- In room 8, columns 10-11 had pipe flags at rows 0-1 and 14-15, causing 24
+  solid tiles to be drawn over Joe across almost the entire room height
+- Fix: removed the entire pipe interior detection block. Only actual foreground
+  layer bytes (the 320-byte section) should be drawn over Joe.
+
+### Fix 4: Switch detection (rooms 8 & 9 unreachable)
+- Old code used `abs(px - x - 8) < 12` pixel radius check
+- Original game uses CHECK_COLLISION (0x043C) with SH00.DAT shape entry 4
+  (4×2 half-res hitbox at offset +2,+2 from switch position)
+- Fix: replaced radius check with collision shape overlap between Joe's shape
+  (entry 0, 14×15) and the switch shape (entry 4, 4×2)
+- This is more generous and matches the original game's detection range
+
+### Fix 5: Object positions (switches still unreachable after fix 4)
+- Object pixel positions were calculated as tile CENTER: `(col*16+8, row*12+6)`
+- Original game's BLOCK_TO_XY returns tile TOP-LEFT: `(col*16, row*12)`
+- The 8px/6px offset shifted every object's hitbox, making switches unreachable
+- Fix: changed to `(col*16, row*12)` matching the original
+
+### Fix 6: Fan animations (types 1-4)
+- Decoded fan handlers from GAME.EXE: all call shared handler at 0x1D40
+- Update (AX=2) increments frame counter, calls MODIFY_FOREGROUND_MAP (0x04B4)
+- Animation tables at DS:0x3257/0x325D/0x3263/0x3269, 3 frames each
+- Each frame replaces a 3×3 tile grid in the foreground map
+- Key discovery from JAM driver renderer (0x4828 second pass):
+  - Foreground tiles REPLACE background tiles (not overlay)
+  - fg == 0 or 0xFF → draw bg tile only
+  - fg == 0xFE (254) → dither blend
+  - Any other fg → draw fg tile INSTEAD of bg
+- Two fan rendering modes based on map data:
+  - fan_3/fan_4: fan tiles in BACKGROUND map (fg bytes = 0) → draw opaquely
+    before Joe in draw_objects, mark positions to skip in render_foreground
+  - fan_1/fan_2: fan tiles in FOREGROUND map (bg = tile 341) → store animated
+    tiles as fg_overrides, render_foreground draws them after Joe with colorkey
+    so fan housing covers Joe but dark interior shows Joe through
+
+### Key addresses discovered this session:
+- MODIFY_FOREGROUND_MAP: 0x04B4 — writes tile values to foreground map at DS:0x05D7
+- MODIFY_SCREEN_MAP: 0x04D2 — writes to screen map at DS:0x0357 (skips if fg exists)
+- Shared fan handler: 0x1D40 — dispatches init/update for all fan types
+- Fan animation tables: DS:0x3257 (fan_1), 0x325D (fan_2), 0x3263 (fan_3), 0x3269 (fan_4)
+- JAM driver tile renderer: 0x4798 (second pass at 0x4828 handles fg tile selection)
+- Switch CHECK_COLLISION call: 0x1BF9 with AX=4 (shape), BX=1 (filter), CX/DX=position
 
 ## REVERSE ENGINEERING METHODOLOGY
 
