@@ -443,6 +443,17 @@ class JetPackJoe:
             self.cbm_cache[room_idx] = build_collision_bitmap(
                 self.blk, self.levels[self.current_level]["map"],
                 room_idx, self.num_tiles)
+            # Add cage collision walls (shape 13: two 2px walls, 18 rows tall)
+            cbm = self.cbm_cache[room_idx][0]
+            if room_idx in self.room_objects:
+                for obj in self.room_objects[room_idx]:
+                    if obj["type"] == 10:
+                        hx, hy = obj["x"] // 2, obj["y"] // 2
+                        for r in range(18):
+                            for c in [1, 2, 21, 22]:  # left wall cols 1-2, right wall cols 21-22
+                                bx, by = hx + c, hy + r
+                                if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                                    cbm[by * HALF_W + bx] = 1
         return self.cbm_cache[room_idx]
 
     def is_solid(self, col, row):
@@ -495,7 +506,7 @@ class JetPackJoe:
             for obj in self.room_objects[room_idx]:
                 if obj["type"] in (6, 7) and "fg_tile" in obj:
                     fg_overrides[obj["params"][0]] = obj["fg_tile"]
-                if obj["type"] in (1, 2, 3, 4) and "fg_tiles" in obj:
+                if obj["type"] in (1, 2, 3, 4, 10) and "fg_tiles" in obj:
                     fg_overrides.update(obj["fg_tiles"])
         fg_bytes = map_data[base + 640:base + 960]
         for i, b in enumerate(fg_bytes):
@@ -667,24 +678,77 @@ class JetPackJoe:
                 continue
             elif ot == 10:  # cage — captive sprite + force field tile animation
                 if len(obj["params"]) >= 3 and obj["params"][2] < len(self.sprites):
-                    sp = self.sprites[obj["params"][2]]
-                    cx, cy = x + 23, y + 10
-                    surface.blit(sp["surf"], (cx + sp["x_off"], cy + sp["y_off"]))
-                    # Force field: 3x3 tile replacement, 4 frames (from DS:0x3AF5)
-                    # Tiles: 232, 233, 252, 253 cycling
-                    ff_tiles = [232, 233, 252, 253]
-                    frame = (obj["timer"] // 4) % 4
-                    ti = ff_tiles[frame]
                     col = obj["params"][0] % MAP_COLS
                     row = obj["params"][0] // MAP_COLS
-                    if ti < len(self.tile_surfs):
-                        ts = self.tile_surfs[ti]
-                        ts.set_colorkey((0, 0, 0))
+                    cx, cy = x + 23, y + 10
+                    disappear = obj.get("disappear", -1)
+                    if disappear >= 0:
+                        # Advance every 3 ticks
+                        obj["disappear_tick"] = obj.get("disappear_tick", 0) + 1
+                        if obj["disappear_tick"] >= 3:
+                            obj["disappear_tick"] = 0
+                            obj["disappear"] = disappear + 1
+                        # Disappear animation (17 frames from DS:0x3389)
+                        CAGE_DISAPPEAR = [
+                            [(0,0),(1,213),(2,0),(20,0),(21,213),(22,0),(40,0),(41,213),(42,0)],
+                            [(0,0),(1,214),(2,0),(20,0),(21,214),(22,0),(40,0),(41,214),(42,0)],
+                            [(0,0),(1,215),(2,0),(20,0),(21,215),(22,0),(40,0),(41,215),(42,0)],
+                            [(0,234),(1,214),(2,235),(20,234),(21,214),(22,235),(40,234),(41,214),(42,235)],
+                            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
+                            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
+                            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
+                            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
+                            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
+                            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
+                            [(0,217),(1,217),(2,217),(20,217),(21,217),(22,217),(40,217),(41,217),(42,217)],
+                            [(0,218),(1,218),(2,218),(20,218),(21,218),(22,218),(40,218),(41,218),(42,218)],
+                            [(0,236),(1,236),(2,236),(20,218),(21,218),(22,218),(40,237),(41,237),(42,237)],
+                            [(0,238),(1,238),(2,238),(20,218),(21,218),(22,218),(40,239),(41,239),(42,239)],
+                            [(0,0),(1,0),(2,0),(20,218),(21,218),(22,218),(40,0),(41,0),(42,0)],
+                            [(0,0),(1,0),(2,0),(20,219),(21,219),(22,219),(40,0),(41,0),(42,0)],
+                            [(0,0),(1,0),(2,0),(20,0),(21,0),(22,0),(40,0),(41,0),(42,0)],
+                        ]
+                        if disappear < 17:
+                            # Draw captive sprite until frame 12
+                            if disappear < 12:
+                                sp = self.sprites[obj["params"][2]]
+                                surface.blit(sp["surf"], (cx + sp["x_off"], cy + sp["y_off"]))
+                            # Draw disappear tiles
+                            for toff, ti in CAGE_DISAPPEAR[disappear]:
+                                dc, dr = toff % 20, toff // 20
+                                fg_idx = (row + dr) * MAP_COLS + (col + dc)
+                                obj.setdefault("fg_tiles", {})[fg_idx] = ti if ti else 0
+                        sp = None
+                    else:
+                        # Active cage: draw captive + force field, check collision
+                        sp = self.sprites[obj["params"][2]]
+                        surface.blit(sp["surf"], (cx + sp["x_off"], cy + sp["y_off"]))
+                        # Force field tiles (4 frames from DS:0x3AF5)
+                        ff_tiles = [232, 233, 252, 253]
+                        frame = (obj["timer"] // 4) % 4
+                        ti = ff_tiles[frame]
                         for dr in range(3):
                             for dc in range(3):
-                                surface.blit(ts, ((col + dc) * TILE_W, (row + dr) * TILE_H))
-                        ts.set_colorkey(None)
-                    sp = None
+                                fg_idx = (row + dr) * MAP_COLS + (col + dc)
+                                obj.setdefault("fg_tiles", {})[fg_idx] = ti
+                        # Check if Joe touches the force field (collision shape overlap)
+                        jhx, jhy = self.player.x // 2, self.player.y // 2
+                        shx, shy = x // 2, y // 2
+                        touching = False
+                        for dy, dx_start, count in JOE_COL_SHAPE:
+                            jy = jhy + dy
+                            if jy < shy or jy > shy + 17:
+                                continue
+                            for i in range(count):
+                                jx = jhx + dx_start + i
+                                if shx <= jx <= shx + 23:
+                                    touching = True
+                                    break
+                            if touching:
+                                break
+                        if touching:
+                            obj["disappear"] = 0  # start disappear animation
+                        sp = None
             elif ot == 17:  # toggle_switch
                 sp = self.sprites[23]
             elif ot == 14:  # sentry — sprites 29-32

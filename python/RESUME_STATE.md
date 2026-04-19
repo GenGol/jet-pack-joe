@@ -903,7 +903,13 @@ Located in debug section starting around 0x10A8E:
      - fan_1/fan_3: forward rotation (frames 0→1→2)
      - fan_2/fan_4: reverse rotation (frames 0→2→1)
      - Animation tables decoded from DS:0x3257/0x325D/0x3263/0x3269
-   - **Cage (type 10)**: renders captive sprite with +23,+10 offset + force field tile animation (tiles 232,233,252,253) ✓
+   - **Cage (type 10) — FULLY WORKING ✓:**
+     - Captive sprite with +23,+10 offset (from 0x13ED)
+     - Force field tile animation: tiles 232,233,252,253 cycling 4 frames (DS:0x3AF5)
+     - Collision walls from SH00.DAT shape 13: two 2px-wide walls, 18 rows tall
+     - Joe touches cage → disappear animation starts (17 frames from DS:0x3389)
+     - Disappear uses tiles 213-219, 234-239 (shrink, flash, dissolve)
+     - Frame 12: captive sprite removed; Frame 16: all tiles cleared
    - **Other objects**: sentry (14), glow_ball (13) — basic sprite rendering only
    - **Not yet implemented**: doors (5), horiz_field (9), generators (11/12/20),
      teleporter (19), sensor_switch (18), plates (15/16), toggle_switch (17)
@@ -1075,6 +1081,11 @@ The JAM driver is a custom Mode X VGA rendering engine embedded in GAME.EXE:
 - Display list update: 0x02DC (calls INT 62h DX=4)
 - JAM driver INT 62h entry: ~0x4599 (saves registers, dispatches on DX)
 - JAM driver double-buffer toggle: 0x47A8 (XOR SI, 1)
+- Cage collision walls: SH00.DAT shape 13 (two 2px walls, 18 rows) written to collision bitmap
+- Cage disappear animation table: DS:0x3389 (17 frames, tiles 213-219, 234-239)
+- Cage disappear handler: 0x1F18 (spawned as new object when Joe touches cage)
+- FREE_SPRITE: 0x03B1 (called at disappear frame 12 to remove captive sprite)
+- Captive count: DS:0x305F (decremented on cage clear), level complete flag: DS:0x23BA
 - Display set base: DS:0x3065 (set at runtime when DS00.DAT is loaded)
 
 ## REVERSE ENGINEERING METHODOLOGY
