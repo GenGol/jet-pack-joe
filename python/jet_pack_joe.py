@@ -434,9 +434,25 @@ class JetPackJoe:
         self.load_room_headers()
         self.load_room_objects()
         self.switch_state = bytearray(256)  # DS:0x3067 — switch states, 0=OFF, 0xFF=ON
-        # Initialize all switches to ON (0xFF) — fields start active
+        # Initialize all switches to ON (0xFF) then turn specific ones OFF
+        # (matches GAME.EXE: fill 0xFF at 0x0622, then loop at 0x0654 sets listed IDs to 0)
         for i in range(256):
             self.switch_state[i] = 0xFF
+        # Parse switch-off list from level data trailer
+        # (GAME.EXE at 0x062D: sets read pointer to room 68, reads header + switch IDs)
+        lv_files = ["LV11.DAT", "LV12.DAT", "LV13.DAT"]
+        lv_data = load_raw(lv_files[self.current_level])
+        first_off = struct.unpack_from('<H', lv_data, 0)[0]
+        # Room 68's offset + 8 (skip header) = start of trailer data
+        trailer_off = struct.unpack_from('<H', lv_data, 68 * 2)[0] + 8
+        trailer_pos = trailer_off + 8  # skip 4 header words (captive count, timer, room, value)
+        while trailer_pos + 1 < len(lv_data):
+            sid = struct.unpack_from('<H', lv_data, trailer_pos)[0]
+            trailer_pos += 2
+            if sid == 0xFFFF:
+                break
+            if sid < 256:
+                self.switch_state[sid] = 0
 
     def get_collision_bitmap(self, room_idx):
         if room_idx not in self.cbm_cache:
@@ -506,7 +522,7 @@ class JetPackJoe:
             for obj in self.room_objects[room_idx]:
                 if obj["type"] in (6, 7) and "fg_tile" in obj:
                     fg_overrides[obj["params"][0]] = obj["fg_tile"]
-                if obj["type"] in (1, 2, 3, 4, 10) and "fg_tiles" in obj:
+                if obj["type"] in (1, 2, 3, 4, 5, 10) and "fg_tiles" in obj:
                     fg_overrides.update(obj["fg_tiles"])
         fg_bytes = map_data[base + 640:base + 960]
         for i, b in enumerate(fg_bytes):
@@ -718,6 +734,15 @@ class JetPackJoe:
                                 dc, dr = toff % 20, toff // 20
                                 fg_idx = (row + dr) * MAP_COLS + (col + dc)
                                 obj.setdefault("fg_tiles", {})[fg_idx] = ti if ti else 0
+                        else:
+                            # Animation complete — clear collision walls
+                            cbm = self.get_collision_bitmap(room_idx)[0]
+                            hx, hy = obj["x"] // 2, obj["y"] // 2
+                            for r in range(18):
+                                for c in [1, 2, 21, 22]:
+                                    bx, by = hx + c, hy + r
+                                    if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                                        cbm[by * HALF_W + bx] = 0
                         sp = None
                     else:
                         # Active cage: draw captive + force field, check collision
@@ -749,6 +774,67 @@ class JetPackJoe:
                         if touching:
                             obj["disappear"] = 0  # start disappear animation
                         sp = None
+            elif ot == 5:  # door — slides up/down based on switch state
+                DOOR_FRAMES = [
+                    [(0,144),(20,164),(40,164),(60,184)],
+                    [(0,145),(20,165),(40,165),(60,185)],
+                    [(0,146),(20,166),(40,166),(60,186)],
+                    [(0,147),(20,167),(40,167),(60,187)],
+                    [(0,144),(20,164),(40,149),(60,187)],
+                    [(0,145),(20,165),(40,169),(60,187)],
+                    [(0,146),(20,166),(40,189),(60,187)],
+                    [(0,147),(20,167),(40,0),(60,187)],
+                    [(0,144),(20,149),(40,0),(60,187)],
+                    [(0,145),(20,169),(40,0),(60,187)],
+                    [(0,146),(20,189),(40,0),(60,187)],
+                    [(0,147),(20,0),(40,0),(60,187)],
+                    [(0,148),(20,0),(40,0),(60,187)],
+                    [(0,168),(20,0),(40,0),(60,187)],
+                    [(0,188),(20,0),(40,0),(60,187)],
+                ]
+                switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
+                var_id = obj["params"][2] if len(obj["params"]) > 2 else 0
+                state = min(14, self.switch_state[var_id])
+                if self.switch_state[switch_id]:
+                    if state < 14:
+                        state += 1
+                else:
+                    if state > 0:
+                        state -= 1
+                self.switch_state[var_id] = state
+                # Update collision bitmap: shape 3 (6w×21h, alternating rows)
+                # Door position: base + (2,4) centered, shifted up by 3*state
+                cbm = self.get_collision_bitmap(room_idx)[0]
+                hx = (x + 2) // 2  # +2 from init offset, half-res
+                hy = (y + 4) // 2  # +4 from init offset, half-res
+                # Clear old door collision (write 0) then draw new
+                for r in range(0, 21, 2):  # alternating rows
+                    for c in range(6):
+                        # Clear full range
+                        for s in range(15):
+                            by = hy - (s * 3) // 2 + r
+                            bx = hx + c
+                            if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                                if cbm[by * HALF_W + bx] == 1:
+                                    pass  # don't clear wall tiles
+                                elif cbm[by * HALF_W + bx] == 2:
+                                    cbm[by * HALF_W + bx] = 0
+                # Draw at new position
+                y_shift = (state * 3) // 2  # half-res shift
+                for r in range(0, 21, 2):
+                    for c in range(6):
+                        bx = hx + c
+                        by = hy - y_shift + r
+                        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                            cbm[by * HALF_W + bx] = 2  # door collision type
+                # Update foreground tiles
+                col = obj["params"][0] % MAP_COLS
+                row = obj["params"][0] // MAP_COLS
+                for toff, ti in DOOR_FRAMES[state]:
+                    dc, dr = toff % 20, toff // 20
+                    fg_idx = (row + dr) * MAP_COLS + (col + dc)
+                    obj.setdefault("fg_tiles", {})[fg_idx] = ti
+                continue
             elif ot == 17:  # toggle_switch
                 sp = self.sprites[23]
             elif ot == 14:  # sentry — sprites 29-32

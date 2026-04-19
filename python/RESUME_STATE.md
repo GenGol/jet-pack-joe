@@ -878,6 +878,12 @@ Located in debug section starting around 0x10A8E:
 - **Fan animations (types 1-4)** — 3×3 tile replacement, 3 frames ✓
   - fan_3/fan_4 (brown): bg layer fans, drawn before Joe (opaque)
   - fan_1/fan_2 (pink/grey): fg layer fans, drawn after Joe (colorkey)
+- **Door (type 5)** — sliding vertical barrier, 15-state tile animation ✓
+  - Controlled by switch_state[switch_id], position in switch_state[var_id]
+  - Dynamic collision wall moves with door (SH00.DAT shape 3)
+- **Switch state initialization** from level data trailer ✓
+  - All states start 0xFF, then specific IDs set to 0 from switch-off list
+  - Level 1: switches 17,18,20,21,22,23,25,26 start OFF
 
 ### NOT YET IMPLEMENTED:
 0. **Collision sprites (SH00.DAT)** — Joe's collision shape DONE ✓, enemy shapes still needed
@@ -911,7 +917,7 @@ Located in debug section starting around 0x10A8E:
      - Disappear uses tiles 213-219, 234-239 (shrink, flash, dissolve)
      - Frame 12: captive sprite removed; Frame 16: all tiles cleared
    - **Other objects**: sentry (14), glow_ball (13) — basic sprite rendering only
-   - **Not yet implemented**: doors (5), horiz_field (9), generators (11/12/20),
+   - **Not yet implemented**: horiz_field (9), generators (11/12/20),
      teleporter (19), sensor_switch (18), plates (15/16), toggle_switch (17)
    - **Not yet implemented gameplay**: field killing Joe, enemy AI, door blocking
 
@@ -1133,6 +1139,85 @@ The JAM driver is a custom Mode X VGA rendering engine embedded in GAME.EXE:
   via ALLOC_SPRITE (0x0378), which converts centered coords to screen coords
   (`ADD CX, 160; ADD DX, 96`) then calls the driver at 0x4625.
 
+### Fix 10: Door implementation (type 5)
+
+**Door mechanism (from GAME.EXE update at 0x1CCF):**
+
+Doors are vertical sliding barriers controlled by switches. Each door has 3 params:
+- param[0]: tile location
+- param[1]: switch_id (which switch controls this door)
+- param[2]: variable_id (switch_state index holding door position 0-14)
+
+**Init (0x1C73):**
+- Position: BLOCK_TO_XY(location) + (2, 4) pixel offset
+- Reads switch_id → [DI+0x1E], variable_id → [DI+0x1F]
+- Calls update immediately to set initial visual state
+
+**Update (0x1CCF):**
+1. Read switch_state[variable_id], clamp to 0-14
+2. DRAW_VISUAL (0x0473) with shape 3 at Y - 3*state (old position)
+3. Check switch_state[switch_id]:
+   - ON (≠0): increment variable toward 14 (door opens, slides UP)
+   - OFF (=0): decrement variable toward 0 (door closes, slides DOWN)
+4. DRAW_COLLISION (0x045A) with shape 3, BL=1 at Y - 3*new_state (collision wall)
+5. MODIFY_FOREGROUND_MAP (0x04B4) with animation table DS:0x3599
+
+**SH00.DAT shape 3 (door collision):**
+```
+6 wide × 21 tall half-res, alternating filled/empty rows:
+######
+......
+######
+(repeated 11 filled rows with gaps)
+```
+
+**Door animation table (DS:0x3599, 15 states):**
+- State 0 (closed): tiles 144, 164, 184 (full door column)
+- States 1-3: door sliding up (tiles 145-147, 165-167, 185-187)
+- States 4-6: top section clearing (tiles 149, 169, 189 = partial)
+- States 7-10: middle section clearing
+- States 11-14: door almost/fully open (tile 187/188 base remains)
+- Each state replaces a 1×4 tile column (offsets 0, 20, 40, 60)
+
+**Room 4 door:** location=26 (tile 6,1), switch_id=17, variable_id=18
+
+### Fix 11: Switch state initialization from level data
+
+**Discovery:** Room 4's door started open instead of closed because all switch states
+were initialized to 0xFF. The original game has a switch-off list in the level data.
+
+**GAME.EXE initialization sequence (0x0622-0x0665):**
+1. Fill switch_state[0-255] with 0xFF (REP STOSW at 0x062C)
+2. Set read pointer to room 68's data (MOV AX, 0x44; CALL 0x04F8)
+3. Read 4 header words from the trailer:
+   - Word 0: captive count (4 for Level 1) → [DS:0x305F]
+   - Word 1: timer value (150) → [DS:0x23DA]
+   - Word 2: start room (0) → [DS:0x23DC] and [DS:0x23BB]
+   - Word 3: value (128) → [DS:0x23BF]
+4. Loop: READ_WORD; if 0xFFFF → done; else set switch_state[word] = 0
+
+**Level data trailer location:**
+- The offset table has 70 entries (rooms 0-67 + 2 extra)
+- Entry 68 (index 68) points to the trailer data area
+- Trailer starts at offsets[68] + 8 (skip 8-byte room header)
+- For LV11.DAT: offsets[68] = 480, trailer at 488
+
+**Level 1 switch-off list:** [17, 18, 20, 21, 22, 23, 25, 26]
+- switch_state[17] = 0: Room 4 door switch OFF (door closed) ✓
+- switch_state[18] = 0: Room 4 door position = 0 (fully closed) ✓
+- switch_state[20-26] = 0: Other door/switch states for rooms 8, 9, etc.
+- switch_state[16] stays 0xFF: Room 0 vertical field ON ✓
+- switch_state[19] stays 0xFF: Room 4 cage active ✓
+
+### Fix 12: Cage collision wall removal after disappear animation
+
+When the cage disappear animation completes (frame 17), the collision walls
+(SH00.DAT shape 13) were not being cleared from the collision bitmap, preventing
+Joe from entering the cage area after the force field was deactivated.
+
+Fix: at frame 17, clear the collision bitmap at the cage wall positions
+(cols 1-2 and 21-22, 18 rows tall, relative to cage half-res position).
+
 ### Key addresses discovered this session:
 - MODIFY_FOREGROUND_MAP: 0x04B4 — writes tile values to foreground map at DS:0x05D7
 - MODIFY_SCREEN_MAP: 0x04D2 — writes to screen map at DS:0x0357 (skips if fg exists)
@@ -1154,6 +1239,14 @@ The JAM driver is a custom Mode X VGA rendering engine embedded in GAME.EXE:
 - FREE_SPRITE: 0x03B1 (called at disappear frame 12 to remove captive sprite)
 - Captive count: DS:0x305F (decremented on cage clear), level complete flag: DS:0x23BA
 - Display set base: DS:0x3065 (set at runtime when DS00.DAT is loaded)
+- Door handler: 0x1C51 (init at 0x1C73, update at 0x1CCF)
+- Door position offset: 0x1CA1 (ADD CX, 2; ADD DX, 4)
+- Door animation table: DS:0x3599 (15 states, 1×4 tile column)
+- Door collision: SH00.DAT shape 3 (6w×21h alternating rows)
+- Switch state fill: 0x0622 (REP STOSW fills 256 bytes with 0xFF)
+- Switch-off list reader: 0x0654 (loop reads IDs from level trailer, sets to 0)
+- Level trailer: room 68 data (offsets[68] + 8 + 4 header words)
+- Room read pointer setup: 0x04F8 (sets DS:0x3061/0x3063 for READ_WORD)
 
 ## REVERSE ENGINEERING METHODOLOGY
 
