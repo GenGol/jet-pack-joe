@@ -489,12 +489,14 @@ class JetPackJoe:
         map_data = self.levels[self.current_level]["map"]
         base = room_idx * ROOM_BYTES
         # Only the foreground layer (320 bytes) is drawn over Joe
-        # Build tile overrides from switch objects
+        # Build tile overrides from switch and fan objects
         fg_overrides = {}
         if room_idx in self.room_objects:
             for obj in self.room_objects[room_idx]:
                 if obj["type"] in (6, 7) and "fg_tile" in obj:
                     fg_overrides[obj["params"][0]] = obj["fg_tile"]
+                if obj["type"] in (1, 2, 3, 4) and "fg_tiles" in obj:
+                    fg_overrides.update(obj["fg_tiles"])
         fg_bytes = map_data[base + 640:base + 960]
         for i, b in enumerate(fg_bytes):
             tile_id = fg_overrides.get(i, b)
@@ -563,7 +565,33 @@ class JetPackJoe:
             obj["timer"] += 1
             x, y = obj["x"], obj["y"]
             sp = None
-            if ot == 8:  # vertical_field — lightning using actual game animation tiles
+            if ot in (1, 2, 3, 4):  # fans — 3x3 foreground tile animation
+                base_tiles = [200, 200, 440, 440][ot - 1]
+                frame_order = [[0,1,2], [0,2,1], [0,1,2], [0,2,1]][ot - 1]
+                frame = frame_order[(obj["timer"] // 6) % 3]
+                col = obj["params"][0] % MAP_COLS
+                row = obj["params"][0] // MAP_COLS
+                map_data = self.levels[self.current_level]["map"]
+                base = room_idx * ROOM_BYTES
+                bg_words = struct.unpack_from('<320H', map_data[base:base + 640])
+                # Check if fan is in background layer (draw before Joe) or foreground (after Joe)
+                bi0 = row * MAP_COLS + col
+                bti0 = bg_words[bi0] & 0x3FF if bg_words[bi0] != 0xFFFF else 0
+                fan_in_bg = (200 <= bti0 <= 248) or (440 <= bti0 <= 488)
+                for dr in range(3):
+                    for dc in range(3):
+                        ti = base_tiles + frame * 3 + dc + dr * 20
+                        fg_idx = (row + dr) * MAP_COLS + (col + dc)
+                        if fan_in_bg:
+                            # Background fan: draw opaquely here (before Joe)
+                            if ti < len(self.tile_surfs):
+                                surface.blit(self.tile_surfs[ti], ((col + dc) * TILE_W, (row + dr) * TILE_H))
+                            obj.setdefault("fg_tiles", {})[fg_idx] = 0  # skip in render_foreground
+                        else:
+                            # Foreground fan: defer to render_foreground (after Joe, with colorkey)
+                            obj.setdefault("fg_tiles", {})[fg_idx] = ti
+                continue
+            elif ot == 8:  # vertical_field — lightning using actual game animation tiles
                 # Check switch state — only draw if switch is ON
                 switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
                 if self.switch_state[switch_id] == 0:
