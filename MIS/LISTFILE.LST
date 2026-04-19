@@ -1,0 +1,30 @@
+Publics by module
+
+CHAR    	size = 289
+	CHAR                              DRAWCHAR
+	INTTODEC                          LOAD8X8
+	STRING                          
+
+D:\EGA\CIRC	size = 429
+	ACIRCLE                           CIRCLE
+	OCIRCLE                           XCIRCLE
+
+D:\EGA\CLRSCR	size = 39
+	CLEARSCREEN                     
+
+D:\EGA\GET	size = 55
+	GET                             
+
+D:\EGA\PLOT	size = 49
+	PLOT                            
+
+D:\EMIS\LINE	size = 722
+	ALINE                             LINE
+	OLINE                             XLINE
+
+RAND    	size = 119
+	RANDOM                            SEEDRAND
+
+TIMER   	size = 176
+	TIMER                             TIMEROFF
+	TIMERON                         

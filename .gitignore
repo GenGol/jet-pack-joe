@@ -1,0 +1,12 @@
+__pycache__/
+python/__pycache__/
+*.pyc
+
+# Debug screenshots (not the sprite/tile sheets)
+python/room_*.png
+python/bad_*.png
+python/good_*.png
+python/switch_*.png
+python/zigzag_*.png
+python/Screenshot *.png
+python/jet_pack_joe_location_info.jpg

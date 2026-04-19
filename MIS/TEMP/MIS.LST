@@ -1,0 +1,2602 @@
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-1
+
+
+       1				                title Missile Command
+       2				                dosseg
+       3				                .model large
+       4				assume cs:@code,ds:@data,ss:@data
+       5				                .stack
+       6 0000				STACK segment 'STACK'
+       7 0400				@CurSeg ends
+       8				                .286
+       9				                includelib egraph
+      10				                extrn timeron:near,time
+					roff:near,timer:word
+      11				                extrn circle:near,plot:
+					near,get:near
+      12				                extrn random:near,seedr
+					and:near
+      13				                extrn oline:near,aline:
+					near,line:near,xline:near
+      14				                extrn inttodec:near,str
+					ing:near
+      15				                extrn load8x8:near,draw
+					char:near
+      16				                extrn clearscreen:near
+      17				                public bytesperline,cha
+					rtable,charheight
+      18				
+      19				                .code
+      20 0000				mis_TEXT segment 'CODE'
+      21				
+      22				
+      23 0000				main            proc near
+      24				
+      25 0000  E8 0009 R		                call init
+      26 0003  E8 0039 R		                call body
+      27 0006  E8 00AF R		                call close
+      28				
+      29 0009				main            endp
+      30				
+      31				
+      32 0009				init            proc near
+      33				
+      34 0009  B8 ---- R		                mov ax,@data
+      35 000C  8E D8			                mov ds,ax
+      36 000E  8E 06 0000 R		                mov es,vidseg
+      37				
+      38 0012  B8 1200			                mov ax,1200h
+      39 0015  B3 31			                mov bl,31h
+      40 0017  CD 10			                int 10h
+      41				
+      42 0019  B8 0012			                mov ax,0012h
+      43 001C  CD 10			                int 10h
+      44				
+      45 001E  E8 05F3 R		                call preppallette
+      46				
+      47 0021  C7 06 0004 R 0050	                mov bytesperline,50h
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-2
+
+
+      48				
+      49 0027  E8 0000 E		                call load8x8
+      50				
+      51 002A  B8 0000			                mov ax,0000
+      52 002D  CD 33			                int 33h
+      53				
+      54 002F  B8 0000			                mov ax,0
+      55 0032  E8 0000 E		                call seedrand
+      56				
+      57 0035  E8 0000 E		                call timeron
+      58				
+      59 0038  C3			                ret
+      60				
+      61 0039				init            endp
+      62				
+      63				
+      64 0039				body            proc near
+      65				
+      66 0039  E8 003D R		                call game
+      67 003C  C3			                ret
+      68				
+      69 003D				body            endp
+      70				
+      71				
+      72 003D				game            proc near
+      73				
+      74 003D  C7 06 0D02 R 0000	                mov score,0
+      75 0043  C7 06 0D0C R 0000	                mov cityhits,0
+      76 0049  C7 06 0D0E R 0000	                mov cityhits+2,0
+      77 004F  C7 06 0D10 R 0000	                mov cityhits+4,0
+      78 0055  C7 06 0D12 R 0000	                mov cityhits+6,0
+      79 005B  C7 06 0D14 R 0000	                mov cityhits+8,0
+      80 0061  C7 06 0D16 R 0000	                mov cityhits+10,0
+      81 0067  C7 06 0D1A R 0000	                mov wavenumber,0
+      82 006D  C7 06 0D1C R 0000	                mov wavepointer,0
+      83 0073  C7 06 0CFC R 0064	                mov nextbonus,100
+      84 0079  C7 06 0CFE R 0000	                mov bonuscitys,0
+      85 007F				        gnext:
+      86 007F  E8 00A5 R		                call wave
+      87 0082  83 3E 0D18 R 00		                cmp citys,0
+      88 0087  7E 1B			                jle gameover
+      89 0089  FF 06 0D1A R		                inc wavenumber
+      90 008D  A1 0008 R		                mov ax,maxwave
+      91 0090  39 06 0D1A R		                cmp wavenumber,ax
+      92 0094  7E 0C			                jle gsk1
+      93 0096  C7 06 0D1A R 0000	                mov wavenumber,0
+      94 009C  C7 06 0D1C R 0000	                mov wavepointer,0
+      95 00A2				        gsk1:
+      96 00A2  EB DB			                jmp gnext
+      97 00A4				        gameover:
+      98 00A4  C3			                ret
+      99				
+     100 00A5				game            endp
+     101				
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-3
+
+
+     102				
+     103 00A5				wave            proc near
+     104				
+     105 00A5  E8 00C1 R		                call setup
+     106 00A8  E8 0133 R		                call timeloop
+     107 00AB  E8 0173 R		                call finish
+     108 00AE  C3			                ret
+     109				
+     110 00AF				wave            endp
+     111				
+     112				
+     113 00AF				close           proc near
+     114				
+     115 00AF  E8 0000 E		                call timeroff
+     116				
+     117 00B2  B8 0000			                mov ax,0
+     118 00B5  CD 33			                int 33h
+     119 00B7  B8 0003			                mov ax,3
+     120 00BA  CD 10			                int 10h
+     121 00BC  B8 4C00			                mov ax,4c00h
+     122 00BF  CD 21			                int 21h
+     123				
+     124 00C1				close           endp
+     125				
+     126				
+     127 00C1				setup           proc near
+     128				
+     129 00C1  E8 0393 R		                call wavedata
+     130 00C4  E8 0602 R		                call setpallette
+     131				
+     132 00C7  E8 025B R		                call doscreen
+     133				
+     134 00CA  E8 0521 R		                call tune1
+     135				
+     136 00CD  C7 06 0D20 R 0019	                mov ts+skip,25
+     137 00D3  C7 06 0D1E R 0000	                mov ts+time,0
+     138 00D9  C7 06 0D22 R 0000	                mov ts+kind,0
+     139 00DF  C7 06 0D24 R 02D3 R	                mov ts+address,offset i
+					nput
+     140				
+     141 00E5  E8 0393 R		                call wavedata
+     142 00E8  A3 0D00 R		                mov warheadspeed,ax
+     143				
+     144 00EB  BE 0020			                mov si,32
+     145 00EE  E8 0393 R		                call wavedata
+     146 00F1  89 84 0D20 R		                mov ts[si+skip],ax
+     147 00F5  E8 0393 R		                call wavedata
+     148 00F8  89 84 0D2C R		                mov ts[si+value],ax
+     149 00FC  C7 84 0D1E R 0000	                mov ts[si+timer],0
+     150 0102  C7 84 0D22 R 0000	                mov ts[si+kind],0
+     151 0108  C7 84 0D24 R 035B R	                mov ts[si+address],offs
+					et wavehandle
+     152				
+     153 010E  C7 06 0CFA R 000F	                mov missright,15
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-4
+
+
+     154 0114  C7 06 0CF8 R 000F	                mov missleft,15
+     155				
+     156 011A  C7 06 0CF0 R 0000	                mov termflag,0
+     157 0120  C7 06 0CF4 R 0001	                mov lasttask,1
+     158 0126  C7 06 0CF2 R 0000	                mov curtask,0
+     159 012C  C7 06 0000 E 0000	                mov timer,0
+     160				
+     161 0132  C3			                ret
+     162				
+     163 0133				setup           endp
+     164				
+     165				
+     166 0133				timeloop        proc near
+     167				
+     168 0133  8B 36 0CF2 R		                mov si,curtask
+     169 0137  C1 E6 05			                shl si,5
+     170 013A  A1 0000 E		                mov ax,timer
+     171 013D  2B 84 0D1E R		                sub ax,ts[si+time]
+     172 0141  3D 0000			                cmp ax,0
+     173 0144  7C 0E			                jl tlnotup
+     174 0146				        tlexec:
+     175 0146  8B 84 0D20 R		                mov ax,ts[si+skip]
+     176 014A  01 84 0D1E R		                add ts[si+time],ax
+     177 014E  8B 84 0D24 R		                mov ax,ts[si+address]
+     178 0152  FF D0			                call ax
+     179 0154				        tlnotup:
+     180 0154  83 3E 0CF0 R 00		                cmp termflag,0
+     181 0159  75 17			                jne tldone
+     182 015B  A1 0CF2 R		                mov ax,curtask
+     183 015E  3B 06 0CF4 R		                cmp ax,lasttask
+     184 0162  7C 08			                jl tlinc
+     185 0164  C7 06 0CF2 R 0000	                mov curtask,0
+     186 016A  EB C7			                jmp timeloop
+     187 016C				        tlinc:
+     188 016C  FF 06 0CF2 R		                inc curtask
+     189 0170  EB C1			                jmp timeloop
+     190 0172				        tldone:
+     191 0172  C3			                ret
+     192				
+     193 0173				timeloop        endp
+     194				
+     195				
+     196 0173				finish          proc near
+     197				
+     198 0173  E8 0CCB R		                call mouseoff
+     199				
+     200 0176  BD 0000			                mov bp,0
+     201 0179  BB 0000			                mov bx,0
+     202 017C				        fnkl1:
+     203 017C  83 BF 0D0C R 00		                cmp cityhits[bx],0
+     204 0181  75 3B			                jne fnk1
+     205 0183  8B 8F 0030 R		                mov cx,cityx[bx]
+     206 0187  8B 16 0018 R		                mov dx,citydeck
+     207 018B  A1 0088 R		                mov ax,backcolor
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-5
+
+
+     208 018E  E8 03CE R		                call drawcity
+     209 0191  8B CD			                mov cx,bp
+     210 0193  B8 0046			                mov ax,70
+     211 0196  F7 E5			                mul bp
+     212 0198  BA 009F 90		                mov dx,maxy/3
+     213 019C  8B C8			                mov cx,ax
+     214 019E  83 C1 64			                add cx,100
+     215 01A1  A1 0092 R		                mov ax,citycolor
+     216 01A4  E8 03CE R		                call drawcity
+     217 01A7  E8 0503 R		                call click
+     218 01AA  A1 00B0 R		                mov ax,points4
+     219 01AD  E8 03A3 R		                call upscore
+     220 01B0  45			                inc bp
+     221 01B1  A1 0000 E		                mov ax,timer
+     222 01B4  03 06 00A6 R		                add ax,cdwait
+     223 01B8				        fnk2:
+     224 01B8  3B 06 0000 E		                cmp ax,timer
+     225 01BC  7F FA			                jg fnk2
+     226 01BE				        fnk1:
+     227 01BE  83 C3 02			                add bx,2
+     228 01C1  83 FB 0C			                cmp bx,12
+     229 01C4  7C B6			                jl fnkl1
+     230				
+     231 01C6  89 2E 0D18 R		                mov citys,bp
+     232				
+     233 01CA  BD 0000			                mov bp,0
+     234 01CD				        fnkl2:
+     235 01CD  83 3E 0CF8 R 00		                cmp missleft,0
+     236 01D2  74 3E			                je fnkl3
+     237 01D4  FF 0E 0CF8 R		                dec missleft
+     238 01D8  A1 0CF8 R		                mov ax,missleft
+     239 01DB  BB 0000			                mov bx,0
+     240 01DE  E8 04C3 R		                call missileoff
+     241 01E1  8B CD			                mov cx,bp
+     242 01E3  C1 E1 04			                shl cx,4
+     243 01E6  83 C1 64			                add cx,100
+     244 01E9  BA 00EF 90		                mov dx,maxy/2
+     245 01ED  A1 008A R		                mov ax,cloudcolor
+     246 01F0  BB 0008			                mov bx,8
+     247 01F3  BE 04B2 R		                mov si,offset missile
+     248 01F6  E8 0000 E		                call drawchar
+     249 01F9  E8 0503 R		                call click
+     250 01FC  A1 00AE R		                mov ax,points3
+     251 01FF  E8 03A3 R		                call upscore
+     252 0202  45			                inc bp
+     253 0203  A1 0000 E		                mov ax,timer
+     254 0206  03 06 00A8 R		                add ax,mdwait
+     255 020A				        fnka1:
+     256 020A  3B 06 0000 E		                cmp ax,timer
+     257 020E  7F FA			                jg fnka1
+     258 0210  EB BB			                jmp fnkl2
+     259 0212				        fnkl3:
+     260 0212  83 3E 0CFA R 00		                cmp missright,0
+     261 0217  74 3E			                je fnk4
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-6
+
+
+     262 0219  FF 0E 0CFA R		                dec missright
+     263 021D  A1 0CFA R		                mov ax,missright
+     264 0220  BB 0001			                mov bx,1
+     265 0223  E8 04C3 R		                call missileoff
+     266 0226  8B CD			                mov cx,bp
+     267 0228  C1 E1 04			                shl cx,4
+     268 022B  83 C1 64			                add cx,100
+     269 022E  BA 00EF 90		                mov dx,maxy/2
+     270 0232  A1 008A R		                mov ax,cloudcolor
+     271 0235  BB 0008			                mov bx,8
+     272 0238  BE 04B2 R		                mov si,offset missile
+     273 023B  E8 0000 E		                call drawchar
+     274 023E  E8 0503 R		                call click
+     275 0241  A1 00AE R		                mov ax,points3
+     276 0244  E8 03A3 R		                call upscore
+     277 0247  45			                inc bp
+     278 0248  A1 0000 E		                mov ax,timer
+     279 024B  03 06 00A8 R		                add ax,mdwait
+     280 024F				        fnka2:
+     281 024F  3B 06 0000 E		                cmp ax,timer
+     282 0253  7F FA			                jg fnka2
+     283 0255  EB BB			                jmp fnkl3
+     284 0257				        fnk4:
+     285				
+     286 0257  E8 059C R		                call bonuscity
+     287				
+     288 025A  C3			                ret
+     289				
+     290 025B				finish          endp
+     291				
+     292				
+     293 025B				doscreen        proc near
+     294				
+     295 025B  B8 0000			                mov ax,0
+     296 025E  B9 01E0			                mov cx,480
+     297 0261  BF 0000			                mov di,0
+     298 0264  E8 0000 E		                call clearscreen
+     299				
+     300 0267  A1 0090 R		                mov ax,groundcolor
+     301 026A  BB 001E			                mov bx,30
+     302 026D				        dslp1:
+     303 026D  BA 01CB 90		                mov dx,maxy-20
+     304 0271  03 D3			                add dx,bx
+     305 0273  8B FA			                mov di,dx
+     306 0275  B9 0000			                mov cx,0
+     307 0278  BE 027F 90		                mov si,maxx
+     308 027C  83 FB 14			                cmp bx,20
+     309 027F  7F 03			                jg dssk1
+     310 0281  E8 0000 E		                call line
+     311 0284				        dssk1:
+     312 0284  83 EA 1E			                sub dx,30
+     313 0287  8B FA			                mov di,dx
+     314 0289  8B 0E 0012 R		                mov cx,xlaunch1
+     315 028D  8B F1			                mov si,cx
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-7
+
+
+     316 028F  2B CB			                sub cx,bx
+     317 0291  03 F3			                add si,bx
+     318 0293  E8 0000 E		                call line
+     319 0296  8B 0E 0014 R		                mov cx,xlaunch2
+     320 029A  8B F1			                mov si,cx
+     321 029C  2B CB			                sub cx,bx
+     322 029E  03 F3			                add si,bx
+     323 02A0  E8 0000 E		                call line
+     324 02A3  4B			                dec bx
+     325 02A4  7F C7			                jg dslp1
+     326				
+     327 02A6  8B 16 0018 R		                mov dx,citydeck
+     328 02AA  BB 0000			                mov bx,0
+     329 02AD				        dslp2:
+     330 02AD  83 BF 0D0C R 00		                cmp cityhits[bx],0
+     331 02B2  7F 0A			                jg dsncd
+     332 02B4  8B 8F 0030 R		                mov cx,cityx[bx]
+     333 02B8  A1 0092 R		                mov ax,citycolor
+     334 02BB  E8 03CE R		                call drawcity
+     335 02BE				        dsncd:
+     336 02BE  83 C3 02			                add bx,2
+     337 02C1  83 FB 0A			                cmp bx,10
+     338 02C4  7E E7			                jle dslp2
+     339				
+     340 02C6  E8 04ED R		                call fillbase
+     341				
+     342 02C9  B8 0000			                mov ax,0
+     343 02CC  E8 03A3 R		                call upscore
+     344				
+     345 02CF  E8 0CA1 R		                call mouseon
+     346				
+     347 02D2  C3			                ret
+     348				
+     349 02D3				doscreen        endp
+     350				
+     351				
+     352 02D3				input           proc near
+     353				
+     354 02D3  E8 0C33 R		                call mothand
+     355 02D6  E8 0C84 R		                call getbuttons
+     356 02D9  53			                push bx
+     357 02DA  21 1E 0CF6 R		                and butflag,bx
+     358 02DE  31 1E 0CF6 R		                xor butflag,bx
+     359 02E2				        msdrop:
+     360 02E2  F7 06 0CF6 R 0001	                test butflag,1
+     361 02E8  74 24			                jz mssk1
+     362 02EA  83 3E 0CF8 R 00		                cmp missleft,0
+     363 02EF  74 1D			                je mssk1
+     364 02F1  FF 0E 0CF8 R		                dec missleft
+     365 02F5  BB 0000			                mov bx,0
+     366 02F8  A1 0CF8 R		                mov ax,missleft
+     367 02FB  E8 04C3 R		                call missileoff
+     368 02FE  8B 0E 0012 R		                mov cx,xlaunch1
+     369 0302  E8 0666 R		                call startupmiss
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-8
+
+
+     370 0305  E8 0CF5 R		                call crosson
+     371 0308  BB 0000			                mov bx,0
+     372 030B  E8 08E6 R		                call startsound
+     373 030E				        mssk1:
+     374 030E  F7 06 0CF6 R 0002	                test butflag,2
+     375 0314  74 24			                jz mssk2
+     376 0316  83 3E 0CFA R 00		                cmp missright,0
+     377 031B  74 1D			                je mssk2
+     378 031D  FF 0E 0CFA R		                dec missright
+     379 0321  BB 0001			                mov bx,1
+     380 0324  A1 0CFA R		                mov ax,missright
+     381 0327  E8 04C3 R		                call missileoff
+     382 032A  8B 0E 0014 R		                mov cx,xlaunch2
+     383 032E  E8 0666 R		                call startupmiss
+     384 0331  E8 0CF5 R		                call crosson
+     385 0334  BB 0000			                mov bx,0
+     386 0337  E8 08E6 R		                call startsound
+     387 033A				        mssk2:
+     388 033A  8F 06 0CF6 R		                pop butflag
+     389 033E  B4 01			                mov ah,1
+     390 0340  CD 16			                int 16h
+     391 0342  74 16			                jz msdone
+     392 0344  B4 00			                mov ah,0
+     393 0346  CD 16			                int 16h
+     394 0348  C7 06 0CF0 R 0001	                mov termflag,1
+     395 034E  3C 0D			                 cmp al,0dh
+     396 0350  75 08			                 jne msdone
+     397 0352  E8 00AF R		                 call close
+     398 0355  B8 4C00			                 mov ax,4c00h
+     399 0358  CD 21			                 int 21h
+     400 035A				        msdone:
+     401 035A  C3			                ret
+     402				
+     403 035B				input           endp
+     404				
+     405				
+     406 035B				wavehandle      proc near
+     407				
+     408 035B  8B 8C 0D2C R		                mov cx,ts[si+value]
+     409 035F  83 F9 FF			                cmp cx,-1
+     410 0362  74 21			                je wvsk2
+     411 0364  56			                push si
+     412 0365				        wvlp1:
+     413 0365  51			                push cx
+     414 0366  BB FFFF			                mov bx,-1
+     415 0369  B9 FFFF			                mov cx,-1
+     416 036C  BA 0000			                mov dx,0
+     417 036F  E8 0833 R		                call startwarhead
+     418 0372  59			                pop cx
+     419 0373  E2 F0			                loop wvlp1
+     420 0375  5E			                pop si
+     421 0376  E8 0393 R		                call wavedata
+     422 0379  89 84 0D20 R		                mov ts[si+skip],ax
+     423 037D  E8 0393 R		                call wavedata
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-9
+
+
+     424 0380  89 84 0D2C R		                mov ts[si+value],ax
+     425 0384  C3			                ret
+     426 0385				        wvsk2:
+     427 0385  83 3E 0CF4 R 01		                cmp lasttask,1
+     428 038A  7F 06			                jg wvsk1
+     429 038C  C7 06 0CF0 R 0001	                mov termflag,1
+     430 0392				        wvsk1:
+     431 0392  C3			                ret
+     432				
+     433 0393				wavehandle      endp
+     434				
+     435				
+     436 0393				wavedata        proc near
+     437				
+     438 0393  53			                push bx
+     439 0394  8B 1E 0D1C R		                mov bx,wavepointer
+     440 0398  8B 87 00C4 R		                mov ax,wave0[bx]
+     441 039C  83 06 0D1C R 02		                add wavepointer,2
+     442 03A1  5B			                pop bx
+     443 03A2  C3			                ret
+     444				
+     445 03A3				wavedata        endp
+     446				
+     447				
+     448 03A3				upscore         proc near
+     449				
+     450 03A3  60			                pusha
+     451				
+     452 03A4  8B F0			                mov si,ax
+     453 03A6  BB 0D04 R		                mov bx,offset scorestri
+					ng
+     454 03A9  A1 0D02 R		                mov ax,score
+     455 03AC  E8 0000 E		                call inttodec
+     456 03AF  A1 0090 R		                mov ax,groundcolor
+     457 03B2  B9 000A			                mov cx,10
+     458 03B5  BA 01D5 90		                mov dx,maxy-10
+     459 03B9  E8 0000 E		                call string
+     460 03BC  01 36 0D02 R		                add score,si
+     461 03C0  A1 0D02 R		                mov ax,score
+     462 03C3  E8 0000 E		                call inttodec
+     463 03C6  B8 000F			                mov ax,15
+     464 03C9  E8 0000 E		                call string
+     465				
+     466 03CC  61			                popa
+     467 03CD  C3			                ret
+     468				
+     469 03CE				upscore         endp
+     470				
+     471				
+     472 03CE				drawcity        proc near
+     473				
+     474				                ;cx,dx=x,y position
+     475				
+     476 03CE  60			                pusha
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-10
+
+
+     477				
+     478 03CF  03 0E 03B9 R		                add cx,city1x
+     479 03D3  03 16 03BB R		                add dx,city1y
+     480 03D7  8B 1E 03BD R		                mov bx,city1h
+     481 03DB  BE 03BF R		                mov si,offset city1
+     482 03DE  E8 0000 E		                call drawchar
+     483 03E1  2B 0E 03B9 R		                sub cx,city1x
+     484 03E5  2B 16 03BB R		                sub dx,city1y
+     485				
+     486 03E9  03 0E 03D4 R		                add cx,city2x
+     487 03ED  03 16 03D6 R		                add dx,city2y
+     488 03F1  8B 1E 03D8 R		                mov bx,city2h
+     489 03F5  BE 03DA R		                mov si,offset city2
+     490 03F8  E8 0000 E		                call drawchar
+     491 03FB  2B 0E 03D4 R		                sub cx,city2x
+     492 03FF  2B 16 03D6 R		                sub dx,city2y
+     493				
+     494 0403  03 0E 03F0 R		                add cx,city3x
+     495 0407  03 16 03F2 R		                add dx,city3y
+     496 040B  8B 1E 03F4 R		                mov bx,city3h
+     497 040F  BE 03F6 R		                mov si,offset city3
+     498 0412  E8 0000 E		                call drawchar
+     499 0415  2B 0E 03F0 R		                sub cx,city3x
+     500 0419  2B 16 03F2 R		                sub dx,city3y
+     501				
+     502 041D  03 0E 0412 R		                add cx,city4x
+     503 0421  03 16 0414 R		                add dx,city4y
+     504 0425  8B 1E 0416 R		                mov bx,city4h
+     505 0429  BE 0418 R		                mov si,offset city4
+     506 042C  E8 0000 E		                call drawchar
+     507 042F  2B 0E 0412 R		                sub cx,city4x
+     508 0433  2B 16 0414 R		                sub dx,city4y
+     509				
+     510 0437  03 0E 0439 R		                add cx,city5x
+     511 043B  03 16 043B R		                add dx,city5y
+     512 043F  8B 1E 043D R		                mov bx,city5h
+     513 0443  BE 043F R		                mov si,offset city5
+     514 0446  E8 0000 E		                call drawchar
+     515 0449  2B 0E 0439 R		                sub cx,city5x
+     516 044D  2B 16 043B R		                sub dx,city5y
+     517				
+     518 0451  03 0E 0460 R		                add cx,city6x
+     519 0455  03 16 0462 R		                add dx,city6y
+     520 0459  8B 1E 0464 R		                mov bx,city6h
+     521 045D  BE 0466 R		                mov si,offset city6
+     522 0460  E8 0000 E		                call drawchar
+     523 0463  2B 0E 0460 R		                sub cx,city6x
+     524 0467  2B 16 0462 R		                sub dx,city6y
+     525				
+     526 046B  03 0E 047E R		                add cx,city7x
+     527 046F  03 16 0480 R		                add dx,city7y
+     528 0473  8B 1E 0482 R		                mov bx,city7h
+     529 0477  BE 0484 R		                mov si,offset city7
+     530 047A  E8 0000 E		                call drawchar
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-11
+
+
+     531 047D  2B 0E 047E R		                sub cx,city7x
+     532 0481  2B 16 0480 R		                sub dx,city7y
+     533				
+     534 0485  03 0E 049B R		                add cx,city8x
+     535 0489  03 16 049D R		                add dx,city8y
+     536 048D  8B 1E 049F R		                mov bx,city8h
+     537 0491  BE 04A1 R		                mov si,offset city8
+     538 0494  E8 0000 E		                call drawchar
+     539				
+     540 0497  61			                popa
+     541 0498  C3			                ret
+     542				
+     543 0499				drawcity        endp
+     544				
+     545				
+     546 0499				missileon       proc near
+     547				
+     548 0499  60			                pusha
+     549 049A  D1 E0			                shl ax,1
+     550 049C  8B E8			                mov bp,ax
+     551 049E  D1 E3			                shl bx,1
+     552 04A0  8B 8F 0012 R		                mov cx,xlaunch1[bx]
+     553 04A4  8B 16 0016 R		                mov dx,ylaunch
+     554 04A8  BB 0008			                mov bx,8
+     555 04AB  BE 04B2 R		                mov si,offset missile
+     556 04AE  A1 008A R		                mov ax,cloudcolor
+     557				
+     558 04B1  3E: 03 8E 004C R		                add cx,ds:missilex[bp]
+     559 04B6  83 E9 03			                sub cx,3
+     560 04B9  3E: 03 96 006A R		                add dx,ds:missiley[bp]
+     561 04BE  E8 0000 E		                call drawchar
+     562 04C1  61			                popa
+     563 04C2  C3			                ret
+     564				
+     565 04C3				missileon       endp
+     566				
+     567				
+     568 04C3				missileoff      proc near
+     569				
+     570 04C3  60			                pusha
+     571 04C4  D1 E0			                shl ax,1
+     572 04C6  8B E8			                mov bp,ax
+     573 04C8  D1 E3			                shl bx,1
+     574 04CA  8B 8F 0012 R		                mov cx,xlaunch1[bx]
+     575 04CE  8B 16 0016 R		                mov dx,ylaunch
+     576 04D2  BB 0008			                mov bx,8
+     577 04D5  BE 04B2 R		                mov si,offset missile
+     578 04D8  A1 0090 R		                mov ax,groundcolor
+     579				
+     580 04DB  3E: 03 8E 004C R		                add cx,ds:missilex[bp]
+     581 04E0  83 E9 03			                sub cx,3
+     582 04E3  3E: 03 96 006A R		                add dx,ds:missiley[bp]
+     583 04E8  E8 0000 E		                call drawchar
+     584 04EB  61			                popa
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-12
+
+
+     585 04EC  C3			                ret
+     586				
+     587 04ED				missileoff      endp
+     588				
+     589				
+     590 04ED				fillbase        proc near
+     591				
+     592 04ED  B8 0000			                mov ax,0
+     593 04F0				        fbloop1:
+     594 04F0  BB 0000			                mov bx,0
+     595 04F3  E8 0499 R		                call missileon
+     596 04F6  BB 0001			                mov bx,1
+     597 04F9  E8 0499 R		                call missileon
+     598 04FC  40			                inc ax
+     599 04FD  3D 000F			                cmp ax,15
+     600 0500  7C EE			                jl fbloop1
+     601 0502  C3			                ret
+     602				
+     603 0503				fillbase        endp
+     604				
+     605				
+     606 0503				click           proc near
+     607				
+     608 0503  53			                push bx
+     609 0504  50			                push ax
+     610 0505  E4 61			                in al,61h
+     611 0507  24 FE			                and al,0feh
+     612 0509  0C 02			                or al,2
+     613 050B  E6 61			                out 61h,al
+     614 050D  8B 1E 0000 E		                mov bx,timer
+     615 0511  83 C3 02			                add bx,2
+     616 0514				        clsk1:
+     617 0514  3B 1E 0000 E		                cmp bx,timer
+     618 0518  77 FA			                ja clsk1
+     619 051A  24 FD			                and al,0fdh
+     620 051C  E6 61			                out 61h,al
+     621 051E  58			                pop ax
+     622 051F  5B			                pop bx
+     623 0520  C3			                ret
+     624				
+     625 0521				click           endp
+     626				
+     627				
+     628 0521				tune1           proc near
+     629				
+     630 0521  B8 0003			                mov ax,3
+     631 0524				        t1lp2:
+     632 0524  BB 0BB8			                mov bx,3000
+     633 0527  B9 002D			                mov cx,45
+     634 052A  BA 000A			                mov dx,10
+     635 052D				        t1lp1:
+     636 052D  E8 056F R		                call tone
+     637 0530  81 C3 0082		                add bx,130
+     638 0534  4A			                dec dx
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-13
+
+
+     639 0535  7F F6			                jg t1lp1
+     640 0537  48			                dec ax
+     641 0538  7F EA			                jg t1lp2
+     642 053A  C3			                ret
+     643				
+     644 053B				tune1           endp
+     645				
+     646				
+     647 053B				tune2           proc near
+     648				
+     649 053B  B9 00B4			                mov cx,180
+     650 053E  BB 07D0			                mov bx,2000
+     651 0541  E8 056F R		                call tone
+     652 0544  BB 05DC			                mov bx,1500
+     653 0547  E8 056F R		                call tone
+     654 054A  BB 07D0			                mov bx,2000
+     655 054D  E8 056F R		                call tone
+     656 0550  BB 05DC			                mov bx,1500
+     657 0553  E8 056F R		                call tone
+     658 0556  BB 07D0			                mov bx,2000
+     659 0559  E8 056F R		                call tone
+     660 055C  BB 05DC			                mov bx,1500
+     661 055F  E8 056F R		                call tone
+     662 0562  A1 0000 E		                mov ax,timer
+     663 0565  05 01F4			                add ax,500
+     664 0568				        t2pt1:
+     665 0568  3B 06 0000 E		                cmp ax,timer
+     666 056C  7F FA			                jg t2pt1
+     667 056E  C3			                ret
+     668				
+     669 056F				tune2           endp
+     670				
+     671				
+     672 056F				tone            proc near
+     673				
+     674 056F  50			                push ax
+     675 0570  53			                push bx
+     676 0571  E4 61			                in al,61h
+     677 0573  0C 03			                or al,3
+     678 0575  E6 61			                out 61h,al
+     679 0577  B0 B6			                mov al,0b6h
+     680 0579  E6 43			                out 43h,al
+     681 057B  8A C3			                mov al,bl
+     682 057D  E6 42			                out 42h,al
+     683 057F  8A C7			                mov al,bh
+     684 0581  E6 42			                out 42h,al
+     685 0583  A1 0000 E		                mov ax,timer
+     686 0586  03 C1			                add ax,cx
+     687 0588				        tnl1:
+     688 0588  8B D8			                mov bx,ax
+     689 058A  2B 1E 0000 E		                sub bx,timer
+     690 058E  83 FB 00			                cmp bx,0
+     691 0591  7F F5			                jg tnl1
+     692 0593  E4 61			                in al,61h
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-14
+
+
+     693 0595  24 FC			                and al,0fch
+     694 0597  E6 61			                out 61h,al
+     695 0599  5B			                pop bx
+     696 059A  58			                pop ax
+     697 059B  C3			                ret
+     698				
+     699 059C				tone            endp
+     700				
+     701				
+     702 059C				bonuscity       proc near
+     703				
+     704 059C  A1 0D02 R		                mov ax,score
+     705 059F  3B 06 0CFC R		                cmp ax,nextbonus
+     706 05A3  7C 4D			                jl bcdone
+     707 05A5  FF 06 0CFE R		                inc bonuscitys
+     708 05A9  A1 00A4 R		                mov ax,bonusgap
+     709 05AC  01 06 0CFC R		                add nextbonus,ax
+     710 05B0  83 3E 0CFE R 00		                cmp bonuscitys,0
+     711 05B5  74 3B			                je bcdone
+     712 05B7  83 3E 0D18 R 06		                cmp citys,6
+     713 05BC  74 34			                je bcdone
+     714 05BE  BB 0000			                mov bx,0
+     715 05C1  E8 0000 E		                call random
+     716 05C4  25 000F			                and ax,0fh
+     717 05C7  8B C8			                mov cx,ax
+     718 05C9  41			                inc cx
+     719 05CA  BB 0000			                mov bx,0
+     720 05CD				        bclp1:
+     721 05CD  83 EB 02			                sub bx,2
+     722 05D0  7D 03			                jge bcsk2
+     723 05D2  BB 000A			                mov bx,10
+     724 05D5				        bcsk2:
+     725 05D5  83 BF 0D0C R 00		                cmp cityhits[bx],0
+     726 05DA  74 F1			                je bclp1
+     727 05DC  E2 EF			                loop bclp1
+     728 05DE  C7 87 0D0C R 0000	                mov cityhits[bx],0
+     729 05E4  FF 06 0D18 R		                inc citys
+     730 05E8  E8 053B R		                call tune2
+     731 05EB  83 3E 0D18 R 06		                cmp citys,6
+     732 05F0  7C AA			                jl bonuscity
+     733 05F2				        bcdone:
+     734 05F2  C3			                ret
+     735				
+     736 05F3				bonuscity       endp
+     737				
+     738				
+     739 05F3				preppallette    proc near
+     740				
+     741 05F3  B8 1002			                mov ax,1002h
+     742 05F6  06			                push es
+     743 05F7  8C DB			                mov bx,ds
+     744 05F9  8E C3			                mov es,bx
+     745 05FB  BA 033C R		                mov dx,offset preppall
+     746 05FE  CD 10			                int 10h
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-15
+
+
+     747 0600  07			                pop es
+     748 0601  C3			                ret
+     749				
+     750 0602				preppallette    endp
+     751				
+     752				
+     753 0602				setpallette     proc near
+     754				
+     755 0602  60			                pusha
+     756 0603  06			                push es
+     757 0604  8C DB			                mov bx,ds
+     758 0606  8E C3			                mov es,bx
+     759				
+     760 0608  BB 001B			                mov bx,27
+     761 060B  F7 E3			                mul bx
+     762 060D  8B F0			                mov si,ax
+     763 060F  B9 0018			                mov cx,24
+     764 0612  81 C6 034D R		                add si,offset palltable
+     765 0616  BF 0CBC R		                mov di,offset utilpall
+     766				
+     767 0619  F3/ A4			                rep movsb
+     768				
+     769 061B  8B 04			                mov ax,[si]
+     770 061D  8A 5C 02			                mov bl,[si+2]
+     771 0620  B9 0008			                mov cx,8
+     772 0623				        spllp2:
+     773 0623  89 05			                mov [di],ax
+     774 0625  88 5D 02			                mov [di+2],bl
+     775 0628  83 C7 03			                add di,3
+     776 062B  E2 F6			                loop spllp2
+     777				
+     778 062D  B8 1012			                mov ax,1012h
+     779 0630  BB 0000			                mov bx,0
+     780 0633  B9 0010			                mov cx,16
+     781 0636  BA 0CBC R		                mov dx,offset utilpall
+     782 0639  CD 10			                int 10h
+     783				
+     784 063B  07			                pop es
+     785 063C  61			                popa
+     786 063D  C3			                ret
+     787				
+     788 063E				setpallette     endp
+     789				
+     790				
+     791				
+     792				                include starts.asm
+     793 063E                        C	endtask         proc near
+     794			     C	
+     795 063E  8B 3E 0CF2 R          C	                mov di,curtask
+     796 0642  C1 E7 05              C	                shl di,5
+     797 0645  8B 36 0CF4 R          C	                mov si,lasttask
+     798 0649  C1 E6 05              C	                shl si,5
+     799 064C  B9 0010               C	                mov cx,16
+     800 064F  81 C6 0D1E R          C	                add si,offset ts
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-16
+
+
+     801 0653  81 C7 0D1E R          C	                add di,offset ts
+     802 0657  8E 06 0002 R          C	                mov es,dataseg
+     803 065B  F3/ A5                C	                rep movsw
+     804 065D  8E 06 0000 R          C	                mov es,vidseg
+     805 0661  FF 0E 0CF4 R          C	                dec lasttask
+     806 0665  C3                    C	                ret
+     807			     C	
+     808 0666                        C	endtask         endp
+     809			     C	
+     810			     C	
+     811 0666                        C	startupmiss     proc near
+     812			     C	
+     813 0666  A1 0CF4 R             C	                mov ax,lasttask
+     814 0669  3B 06 0006 R          C	                cmp ax,maxtask
+     815 066D  7C 01                 C	                jl sumcd
+     816 066F  C3                    C	                ret
+     817 0670                        C	        sumcd:
+     818 0670  8B D9                 C	                mov bx,cx
+     819 0672  51                    C	                push cx
+     820 0673  FF 06 0CF4 R          C	                inc lasttask
+     821 0677  8B 36 0CF4 R          C	                mov si,lasttask
+     822 067B  C1 E6 05              C	                shl si,5
+     823 067E  C7 84 0D22 R 0001     C	                mov ts[si+kind],1
+     824 0684  A1 009E R             C	                mov ax,miss1speed
+     825 0687  89 84 0D20 R          C	                mov ts[si+skip],ax
+     826 068B  A1 0000 E             C	                mov ax,timer
+     827 068E  89 84 0D1E R          C	                mov ts[si+time],ax
+     828 0692  C7 84 0D24 R 0980 R   C	                mov ts[si+address],offs
+					et upmissile
+     829 0698  8B 0E 0CEC R          C	                mov cx,mousex
+     830 069C  8B 16 0CEE R          C	                mov dx,mousey
+     831 06A0  56                    C	                push si
+     832 06A1  E8 07C2 R             C	                call starttracer
+     833 06A4  5E                    C	                pop si
+     834 06A5  89 94 0D38 R          C	                mov ts[si+lasty],dx
+     835 06A9  89 8C 0D36 R          C	                mov ts[si+lastx],cx
+     836			     C	
+     837 06AD  58                    C	                pop ax
+     838 06AE  89 84 0D26 R          C	                mov ts[si+xpos],ax
+     839 06B2  2B C1                 C	                sub ax,cx
+     840 06B4  89 84 0D2A R          C	                mov ts[si+deltax],ax
+     841			     C	
+     842 06B8  A1 0016 R             C	                mov ax,ylaunch
+     843 06BB  89 84 0D28 R          C	                mov ts[si+ypos],ax
+     844 06BF  2B C2                 C	                sub ax,dx
+     845 06C1  89 84 0D2C R          C	                mov ts[si+deltay],ax
+     846			     C	
+     847 06C5  C7 84 0D34 R FFFF     C	                mov ts[si+direction],-1
+     848			     C	
+     849 06CB  8B 84 0D2C R          C	                mov ax,ts[si+deltay]
+     850 06CF  2B 84 0D2A R          C	                sub ax,ts[si+deltax]
+     851 06D3  D1 F8                 C	                sar ax,1
+     852 06D5  89 84 0D2E R          C	                mov ts[si+decision],ax
+     853			     C	
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-17
+
+
+     854 06D9  A1 008C R             C	                mov ax,mcolor1
+     855 06DC  89 84 0D30 R          C	                mov ts[si+color1],ax
+     856 06E0  A1 008E R             C	                mov ax,mcolor2
+     857 06E3  89 84 0D32 R          C	                mov ts[si+color2],ax
+     858 06E7  83 BC 0D2A R 00       C	                cmp ts[si+deltax],0
+     859 06EC  7C 03                 C	                jl smurev
+     860 06EE  EB 09 90              C	                jmp smudone
+     861 06F1                        C	        smurev:
+     862 06F1  F7 9C 0D2A R          C	                neg ts[si+deltax]
+     863 06F5  F7 9C 0D34 R          C	                neg ts[si+direction]
+     864 06F9                        C	        smudone:
+     865 06F9  C3                    C	                ret
+     866			     C	
+     867 06FA                        C	startupmiss     endp
+     868			     C	
+     869			     C	
+     870 06FA                        C	startcloud      proc near
+     871			     C	
+     872 06FA  8B 1E 0CF4 R          C	                mov bx,lasttask
+     873 06FE  3B 1E 0006 R          C	                cmp bx,maxtask
+     874 0702  7C 01                 C	                jl sccd
+     875 0704  C3                    C	                ret
+     876 0705                        C	        sccd:
+     877 0705  8B 36 0CF4 R          C	                mov si,lasttask
+     878 0709  46                    C	                inc si
+     879 070A  C1 E6 05              C	                shl si,5
+     880 070D  8B 1E 009C R          C	                mov bx,cloudspeed
+     881 0711  89 9C 0D20 R          C	                mov ts[si+skip],bx
+     882 0715  8B 1E 0000 E          C	                mov bx,timer
+     883 0719  89 9C 0D1E R          C	                mov ts[si+time],bx
+     884 071D  C7 84 0D22 R 0004     C	                mov ts[si+kind],4
+     885 0723  C7 84 0D24 R 0937 R   C	                mov ts[si+address],offs
+					et cloud
+     886 0729  89 8C 0D26 R          C	                mov ts[si+xpos],cx
+     887 072D  89 94 0D28 R          C	                mov ts[si+ypos],dx
+     888 0731  C7 84 0D2A R 0000     C	                mov ts[si+radius],0
+     889 0737  C7 84 0D34 R 0001     C	                mov ts[si+direction],1
+     890 073D  8B 1E 001C R          C	                mov bx,clouddeck
+     891 0741  2B DA                 C	                sub bx,dx
+     892 0743  3B 1E 009A R          C	                cmp bx,cloudrad
+     893 0747  7E 04                 C	                jle scsk1
+     894 0749  8B 1E 009A R          C	                mov bx,cloudrad
+     895 074D                        C	        scsk1:
+     896 074D  83 FB 02              C	                cmp bx,2
+     897 0750  7F 03                 C	                jg scsk2
+     898 0752  BB 0003               C	                mov bx,3
+     899 0755                        C	        scsk2:
+     900 0755  89 9C 0D3A R          C	                mov ts[si+maxradius],bx
+     901 0759  89 84 0D30 R          C	                mov ts[si+color],ax
+     902 075D  FF 06 0CF4 R          C	                inc lasttask
+     903 0761  C3                    C	                ret
+     904			     C	
+     905 0762                        C	startcloud      endp
+     906			     C	
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-18
+
+
+     907			     C	
+     908 0762                        C	nukecity        proc near
+     909			     C	
+     910 0762  FF 36 009A R          C	                push cloudrad
+     911 0766  FF 36 001C R          C	                push clouddeck
+     912 076A  C7 06 009A R 0017     C	                mov cloudrad,23
+     913 0770  C7 06 001C R 03E8     C	                mov clouddeck,1000
+     914 0776  D1 E3                 C	                shl bx,1
+     915 0778  8B 87 0030 R          C	                mov ax,cityx[bx]
+     916 077C  BB 0000               C	                mov bx,0
+     917 077F                        C	        ncloop:
+     918 077F  56                    C	                push si
+     919 0780  50                    C	                push ax
+     920 0781  53                    C	                push bx
+     921 0782  8B 16 0018 R          C	                mov dx,citydeck
+     922 0786  03 97 0024 R          C	                add dx,nukey[bx]
+     923 078A  8B 8F 001E R          C	                mov cx,nukex[bx]
+     924 078E  03 C8                 C	                add cx,ax
+     925 0790  8B 87 002A R          C	                mov ax,nuket[bx]
+     926 0794  01 06 0000 E          C	                add timer,ax
+     927 0798  A1 0098 R             C	                mov ax,warcloudcolor
+     928 079B  E8 06FA R             C	                call startcloud
+     929 079E  5B                    C	                pop bx
+     930 079F  8B 87 002A R          C	                mov ax,nuket[bx]
+     931 07A3  29 06 0000 E          C	                sub timer,ax
+     932 07A7  58                    C	                pop ax
+     933 07A8  5E                    C	                pop si
+     934 07A9  83 C3 02              C	                add bx,2
+     935 07AC  83 FB 06              C	                cmp bx,6
+     936 07AF  7C CE                 C	                jl ncloop
+     937			     C	
+     938 07B1  8F 06 001C R          C	                pop clouddeck
+     939 07B5  8F 06 009A R          C	                pop cloudrad
+     940 07B9  56                    C	                push si
+     941 07BA  BB 0002               C	                mov bx,2
+     942 07BD  E8 08E6 R             C	                call startsound
+     943 07C0  5E                    C	                pop si
+     944 07C1  C3                    C	                ret
+     945			     C	
+     946 07C2                        C	nukecity        endp
+     947			     C	
+     948			     C	
+     949 07C2                        C	starttracer     proc near
+     950			     C	
+     951 07C2  53                    C	                push bx
+     952 07C3  FF 06 0CF4 R          C	                inc lasttask
+     953 07C7  8B 36 0CF4 R          C	                mov si,lasttask
+     954 07CB  C1 E6 05              C	                shl si,5
+     955 07CE  C7 84 0D22 R 0001     C	                mov ts[si+kind],1
+     956 07D4  A1 009E R             C	                mov ax,miss1speed
+     957 07D7  89 84 0D20 R          C	                mov ts[si+skip],ax
+     958 07DB  A1 0000 E             C	                mov ax,timer
+     959 07DE  03 06 00A2 R          C	                add ax,tracewait
+     960 07E2  89 84 0D1E R          C	                mov ts[si+time],ax
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-19
+
+
+     961 07E6  C7 84 0D24 R 09F8 R   C	                mov ts[si+address],offs
+					et tracer
+     962 07EC  89 94 0D38 R          C	                mov ts[si+lasty],dx
+     963 07F0  89 8C 0D36 R          C	                mov ts[si+lastx],cx
+     964			     C	
+     965 07F4  58                    C	                pop ax
+     966 07F5  89 84 0D26 R          C	                mov ts[si+xpos],ax
+     967 07F9  2B C1                 C	                sub ax,cx
+     968 07FB  89 84 0D2A R          C	                mov ts[si+deltax],ax
+     969			     C	
+     970 07FF  A1 0016 R             C	                mov ax,ylaunch
+     971 0802  89 84 0D28 R          C	                mov ts[si+ypos],ax
+     972 0806  2B C2                 C	                sub ax,dx
+     973 0808  89 84 0D2C R          C	                mov ts[si+deltay],ax
+     974			     C	
+     975 080C  C7 84 0D34 R FFFF     C	                mov ts[si+direction],-1
+     976			     C	
+     977 0812  8B 84 0D2C R          C	                mov ax,ts[si+deltay]
+     978 0816  2B 84 0D2A R          C	                sub ax,ts[si+deltax]
+     979 081A  D1 F8                 C	                sar ax,1
+     980 081C  89 84 0D2E R          C	                mov ts[si+decision],ax
+     981			     C	
+     982 0820  83 BC 0D2A R 00       C	                cmp ts[si+deltax],0
+     983 0825  7C 03                 C	                jl sturev
+     984 0827  EB 09 90              C	                jmp studone
+     985 082A                        C	        sturev:
+     986 082A  F7 9C 0D2A R          C	                neg ts[si+deltax]
+     987 082E  F7 9C 0D34 R          C	                neg ts[si+direction]
+     988 0832                        C	        studone:
+     989 0832  C3                    C	                ret
+     990			     C	
+     991 0833                        C	starttracer     endp
+     992			     C	
+     993			     C	
+     994 0833                        C	startwarhead    proc near
+     995			     C	
+     996 0833  A1 0CF4 R             C	                mov ax,lasttask
+     997 0836  3B 06 0006 R          C	                cmp ax,maxtask
+     998 083A  7C 01                 C	                jl swcd
+     999 083C  C3                    C	                ret
+    1000 083D                        C	        swcd:
+    1001 083D  FF 06 0CF4 R          C	                inc lasttask
+    1002 0841  8B 36 0CF4 R          C	                mov si,lasttask
+    1003 0845  C1 E6 05              C	                shl si,5
+    1004 0848  C7 84 0D22 R 0001     C	                mov ts[si+kind],1
+    1005 084E  A1 0D00 R             C	                mov ax,warheadspeed
+    1006 0851  89 84 0D20 R          C	                mov ts[si+skip],ax
+    1007 0855  A1 0000 E             C	                mov ax,timer
+    1008 0858  89 84 0D1E R          C	                mov ts[si+time],ax
+    1009 085C  C7 84 0D24 R 0A66 R   C	                mov ts[si+address],offs
+					et warhead
+    1010			     C	
+    1011 0862  83 FB FF              C	                cmp bx,-1
+    1012 0865  75 0D                 C	                jne swhsk1
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-20
+
+
+    1013 0867  BB 0000               C	                mov bx,0
+    1014 086A  E8 0000 E             C	                call random
+    1015 086D  25 0007               C	                and ax,7
+    1016 0870  D1 E0                 C	                shl ax,1
+    1017 0872  8B D8                 C	                mov bx,ax
+    1018 0874                        C	        swhsk1:
+    1019 0874  89 9C 0D3C R          C	                mov ts[si+target],bx
+    1020 0878  8B 9F 003C R          C	                mov bx,targetx[bx]
+    1021			     C	
+    1022 087C  83 F9 FF              C	                cmp cx,-1
+    1023 087F  75 0C                 C	                jne swhsk2
+    1024 0881  53                    C	                push bx
+    1025 0882  BB 027F 90            C	                mov bx,maxx
+    1026 0886  43                    C	                inc bx
+    1027 0887  E8 0000 E             C	                call random
+    1028 088A  8B C8                 C	                mov cx,ax
+    1029 088C  5B                    C	                pop bx
+    1030 088D                        C	        swhsk2:
+    1031 088D  89 8C 0D26 R          C	                mov ts[si+xpos],cx
+    1032 0891  89 8C 0D36 R          C	                mov ts[si+lastx],cx
+    1033 0895  2B D9                 C	                sub bx,cx
+    1034 0897  89 9C 0D2A R          C	                mov ts[si+deltax],bx
+    1035			     C	
+    1036 089B  89 94 0D28 R          C	                mov ts[si+ypos],dx
+    1037 089F  89 94 0D38 R          C	                mov ts[si+lasty],dx
+    1038 08A3  2B 16 0018 R          C	                sub dx,citydeck
+    1039 08A7  F7 DA                 C	                neg dx
+    1040 08A9  89 94 0D2C R          C	                mov ts[si+deltay],dx
+    1041			     C	
+    1042 08AD  C7 84 0D34 R 0001     C	                mov ts[si+direction],1
+    1043			     C	
+    1044 08B3  8B 84 0D2C R          C	                mov ax,ts[si+deltay]
+    1045 08B7  2B 84 0D2A R          C	                sub ax,ts[si+deltax]
+    1046 08BB  D1 F8                 C	                sar ax,1
+    1047 08BD  89 84 0D2E R          C	                mov ts[si+decision],ax
+    1048 08C1  89 84 0D3A R          C	                mov ts[si+lastdec],ax
+    1049			     C	
+    1050 08C5  A1 0094 R             C	                mov ax,warheadcolor1
+    1051 08C8  89 84 0D30 R          C	                mov ts[si+color1],ax
+    1052 08CC  A1 0096 R             C	                mov ax,warheadcolor2
+    1053 08CF  89 84 0D32 R          C	                mov ts[si+color2],ax
+    1054 08D3  83 BC 0D2A R 00       C	                cmp ts[si+deltax],0
+    1055 08D8  7C 03                 C	                jl swhrev
+    1056 08DA  EB 09 90              C	                jmp swhdone
+    1057 08DD                        C	        swhrev:
+    1058 08DD  F7 9C 0D2A R          C	                neg ts[si+deltax]
+    1059 08E1  F7 9C 0D34 R          C	                neg ts[si+direction]
+    1060 08E5                        C	        swhdone:
+    1061 08E5  C3                    C	                ret
+    1062			     C	
+    1063 08E6                        C	startwarhead    endp
+    1064			     C	
+    1065			     C	
+    1066 08E6                        C	startsound      proc near
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-21
+
+
+    1067			     C	
+    1068 08E6  A1 0CF4 R             C	                mov ax,lasttask
+    1069 08E9  3B 06 0006 R          C	                cmp ax,maxtask
+    1070 08ED  7C 01                 C	                jl ssnd1
+    1071 08EF  C3                    C	                ret
+    1072 08F0                        C	        ssnd1:
+    1073 08F0  D1 E3                 C	                shl bx,1
+    1074 08F2  FF 06 0CF4 R          C	                inc lasttask
+    1075 08F6  8B 36 0CF4 R          C	                mov si,lasttask
+    1076 08FA  C1 E6 05              C	                shl si,5
+    1077 08FD  C7 84 0D22 R 0007     C	                mov ts[si+kind],7
+    1078 0903  8B 87 00B2 R          C	                mov ax,frequ0[bx]
+    1079 0907  89 84 0D20 R          C	                mov ts[si+skip],ax
+    1080 090B  8B 87 00B8 R          C	                mov ax,frequ1[bx]
+    1081 090F  89 84 0D2A R          C	                mov ts[si+altskip],ax
+    1082 0913  A1 0000 E             C	                mov ax,timer
+    1083 0916  89 84 0D1E R          C	                mov ts[si+time],ax
+    1084 091A  C7 84 0D24 R 0C0C R   C	                mov ts[si+address],offs
+					et sound
+    1085			     C	
+    1086 0920  E4 61                 C	                in al,61h              
+					 ;disconnect speaker from timer
+    1087 0922  24 FE                 C	                and al,0feh
+    1088 0924  E6 61                 C	                out 61h,al
+    1089 0926  0C 02                 C	                or al,2
+    1090 0928  B4 00                 C	                mov ah,0
+    1091 092A  89 84 0D2C R          C	                mov ts[si+value],ax
+    1092			     C	
+    1093 092E  8B 87 00BE R          C	                mov ax,frequc[bx]
+    1094 0932  89 84 0D2E R          C	                mov ts[si+cycles],ax
+    1095			     C	
+    1096 0936  C3                    C	                ret
+    1097			     C	
+    1098 0937                        C	startsound      endp
+    1099			     C	
+    1100			     C	
+    1101			     C	
+    1102			     C	
+    1103			     C	
+    1104				
+    1105				
+    1106				                include maint.asm
+    1107			     C	
+    1108 0937                        C	cloud           proc near
+    1109			     C	
+    1110 0937  83 BC 0D34 R 00       C	                cmp ts[si+direction],0
+    1111 093C  7E 23                 C	                jle cldown
+    1112 093E                        C	        clup:
+    1113 093E  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1114 0942  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1115 0946  8B 9C 0D2A R          C	                mov bx,ts[si+radius]
+    1116 094A  8B 84 0D30 R          C	                mov ax,ts[si+color]
+    1117 094E  E8 0000 E             C	                call circle
+    1118 0951  3B 9C 0D3A R          C	                cmp bx,ts[si+maxradius]
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-22
+
+
+    1119 0955  7D 05                 C	                jge cluptdn
+    1120 0957  FF 84 0D2A R          C	                inc ts[si+radius]
+    1121 095B  C3                    C	                ret
+    1122 095C                        C	        cluptdn:
+    1123 095C  F7 9C 0D34 R          C	                neg ts[si+direction]
+    1124 0960  C3                    C	                ret
+    1125 0961                        C	        cldown:
+    1126 0961  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1127 0965  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1128 0969  8B 9C 0D2A R          C	                mov bx,ts[si+radius]
+    1129 096D  A1 0088 R             C	                mov ax,backcolor
+    1130 0970  E8 0000 E             C	                call circle
+    1131 0973  FF 8C 0D2A R          C	                dec ts[si+radius]
+    1132 0977  83 FB 00              C	                cmp bx,0
+    1133 097A  7F 03                 C	                jg cldone
+    1134 097C  E8 063E R             C	                call endtask
+    1135 097F                        C	        cldone:
+    1136 097F  C3                    C	                ret
+    1137			     C	
+    1138 0980                        C	cloud           endp
+    1139			     C	
+    1140			     C	
+    1141 0980                        C	upmissile       proc near
+    1142			     C	
+    1143 0980  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1144 0984  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1145 0988  8B 84 0D32 R          C	                mov ax,ts[si+color2]
+    1146 098C  E8 0000 E             C	                call plot
+    1147 098F  83 BC 0D2E R 00       C	                cmp ts[si+decision],0
+    1148 0994  7C 1E                 C	                jl umhoriz
+    1149 0996                        C	        umvert:
+    1150 0996  FF 8C 0D28 R          C	                dec ts[si+ypos]
+    1151 099A  8B 84 0D2A R          C	                mov ax,ts[si+deltax]
+    1152 099E  29 84 0D2E R          C	                sub ts[si+decision],ax
+    1153 09A2  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1154 09A6  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1155 09AA  8B 84 0D30 R          C	                mov ax,ts[si+color1]
+    1156 09AE  E8 0000 E             C	                call plot
+    1157 09B1  EB 20 90              C	                jmp umdone
+    1158 09B4                        C	        umhoriz:
+    1159 09B4  8B 84 0D34 R          C	                mov ax,ts[si+direction]
+    1160 09B8  01 84 0D26 R          C	                add ts[si+xpos],ax
+    1161 09BC  8B 84 0D2C R          C	                mov ax,ts[si+deltay]
+    1162 09C0  01 84 0D2E R          C	                add ts[si+decision],ax
+    1163 09C4  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1164 09C8  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1165 09CC  8B 84 0D30 R          C	                mov ax,ts[si+color1]
+    1166 09D0  E8 0000 E             C	                call plot
+    1167 09D3                        C	        umdone:
+    1168 09D3  3B 94 0D38 R          C	                cmp dx,ts[si+lasty]
+    1169 09D7  7F 0D                 C	                jg umska
+    1170 09D9  83 BC 0D34 R 00       C	                cmp ts[si+direction],0
+    1171 09DE  7F 07                 C	                jg umskb
+    1172 09E0  3B 8C 0D36 R          C	                cmp cx,ts[si+lastx]
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-23
+
+
+    1173 09E4  7E 08                 C	                jle umend
+    1174 09E6                        C	        umska:
+    1175 09E6  C3                    C	                ret
+    1176 09E7                        C	        umskb:
+    1177 09E7  3B 8C 0D36 R          C	                cmp cx,ts[si+lastx]
+    1178 09EB  7D 01                 C	                jge umend
+    1179 09ED  C3                    C	                ret
+    1180 09EE                        C	        umend:
+    1181 09EE  A1 008A R             C	                mov ax,cloudcolor
+    1182 09F1  E8 06FA R             C	                call startcloud
+    1183 09F4  E8 063E R             C	                call endtask
+    1184 09F7  C3                    C	                ret
+    1185			     C	
+    1186 09F8                        C	upmissile       endp
+    1187			     C	
+    1188			     C	
+    1189 09F8                        C	tracer          proc near
+    1190			     C	
+    1191 09F8  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1192 09FC  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1193 0A00  E8 0000 E             C	                call get
+    1194 0A03  24 07                 C	                and al,7
+    1195 0A05  3A 06 008E R          C	                cmp al,byte ptr mcolor2
+    1196 0A09  75 06                 C	                jne trsk1
+    1197 0A0B  A1 0088 R             C	                mov ax,backcolor
+    1198 0A0E  E8 0000 E             C	                call plot
+    1199 0A11                        C	        trsk1:
+    1200 0A11  83 BC 0D2E R 00       C	                cmp ts[si+decision],0
+    1201 0A16  7C 17                 C	                jl trhoriz
+    1202 0A18                        C	        trvert:
+    1203 0A18  FF 8C 0D28 R          C	                dec ts[si+ypos]
+    1204 0A1C  8B 84 0D2A R          C	                mov ax,ts[si+deltax]
+    1205 0A20  29 84 0D2E R          C	                sub ts[si+decision],ax
+    1206 0A24  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1207 0A28  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1208 0A2C  EB 19 90              C	                jmp trdone
+    1209 0A2F                        C	        trhoriz:
+    1210 0A2F  8B 84 0D34 R          C	                mov ax,ts[si+direction]
+    1211 0A33  01 84 0D26 R          C	                add ts[si+xpos],ax
+    1212 0A37  8B 84 0D2C R          C	                mov ax,ts[si+deltay]
+    1213 0A3B  01 84 0D2E R          C	                add ts[si+decision],ax
+    1214 0A3F  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1215 0A43  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1216 0A47                        C	        trdone:
+    1217 0A47  3B 94 0D38 R          C	                cmp dx,ts[si+lasty]
+    1218 0A4B  7F 0D                 C	                jg trska
+    1219 0A4D  83 BC 0D34 R 00       C	                cmp ts[si+direction],0
+    1220 0A52  7F 07                 C	                jg trskb
+    1221 0A54  3B 8C 0D36 R          C	                cmp cx,ts[si+lastx]
+    1222 0A58  7E 08                 C	                jle trend
+    1223 0A5A                        C	        trska:
+    1224 0A5A  C3                    C	                ret
+    1225 0A5B                        C	        trskb:
+    1226 0A5B  3B 8C 0D36 R          C	                cmp cx,ts[si+lastx]
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-24
+
+
+    1227 0A5F  7D 01                 C	                jge trend
+    1228 0A61  C3                    C	                ret
+    1229 0A62                        C	        trend:
+    1230 0A62  E8 063E R             C	                call endtask
+    1231 0A65  C3                    C	                ret
+    1232			     C	
+    1233 0A66                        C	tracer          endp
+    1234			     C	
+    1235			     C	
+    1236 0A66                        C	warhead         proc near
+    1237			     C	
+    1238 0A66  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1239 0A6A  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1240 0A6E  8B 84 0D32 R          C	                mov ax,ts[si+color2]
+    1241 0A72  E8 0000 E             C	                call plot
+    1242 0A75  83 BC 0D2E R 00       C	                cmp ts[si+decision],0
+    1243 0A7A  7D 03                 C	                jge whvert
+    1244 0A7C  E9 0B60 R             C	                jmp whhoriz
+    1245 0A7F                        C	        whvert:
+    1246 0A7F  FF 84 0D28 R          C	                inc ts[si+ypos]
+    1247 0A83  A1 001A R             C	                mov ax,splitdeck
+    1248 0A86  39 84 0D28 R          C	                cmp ts[si+ypos],ax
+    1249 0A8A  74 03                 C	                je whsk4
+    1250 0A8C  EB 3F 90              C	                jmp whsk2
+    1251 0A8F                        C	        whsk4:
+    1252 0A8F  BB 0000               C	                mov bx,0
+    1253 0A92  E8 0000 E             C	                call random
+    1254 0A95  25 0003               C	                and ax,3
+    1255 0A98  74 03                 C	                je whsk5
+    1256 0A9A  EB 31 90              C	                jmp whsk2
+    1257 0A9D                        C	        whsk5:
+    1258 0A9D  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1259 0AA1  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1260 0AA5  8B 9C 0D3C R          C	                mov bx,ts[si+target]
+    1261 0AA9  83 C3 02              C	                add bx,2
+    1262 0AAC  83 FB 0E              C	                cmp bx,14
+    1263 0AAF  7E 03                 C	                jle whska
+    1264 0AB1  83 EB 06              C	                sub bx,6
+    1265 0AB4                        C	        whska:
+    1266 0AB4  60                    C	                pusha
+    1267 0AB5  E8 0833 R             C	                call startwarhead
+    1268 0AB8  61                    C	                popa
+    1269 0AB9  8B 9C 0D3C R          C	                mov bx,ts[si+target]
+    1270 0ABD  83 EB 02              C	                sub bx,2
+    1271 0AC0  83 FB 00              C	                cmp bx,0
+    1272 0AC3  7D 03                 C	                jge whskb
+    1273 0AC5  83 C3 06              C	                add bx,6
+    1274 0AC8                        C	        whskb:
+    1275 0AC8  60                    C	                pusha
+    1276 0AC9  E8 0833 R             C	                call startwarhead
+    1277 0ACC  61                    C	                popa
+    1278 0ACD                        C	        whsk3:
+    1279			     C	               ;mov cx,ts[si+xpos]
+    1280			     C	               ;mov dx,ts[si+ypos]
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-25
+
+
+    1281			     C	               ;xchg cx,ts[si+lastx]
+    1282			     C	               ;xchg dx,ts[si+lasty]
+    1283			     C	               ;mov ts[si+xpos],cx
+    1284			     C	               ;mov ts[si+ypos],dx
+    1285			     C	               ;mov ax,ts[si+lastdec]
+    1286			     C	               ;mov ts[si+decision],ax
+    1287			     C	               ;mov ts[si+address],offs
+					et wartrace
+    1288			     C	               ;mov ts[si+kind],5
+    1289			     C	               ;mov ax,wartracespeed
+    1290			     C	               ;mov ts[si+skip],ax
+    1291			     C	               ;jmp whdone
+    1292 0ACD                        C	        whsk2:
+    1293 0ACD  B8 01D0               C	                mov ax,maxy-15
+    1294 0AD0  39 84 0D28 R          C	                cmp ts[si+ypos],ax
+    1295 0AD4  7F 3C                 C	                jg whsk9
+    1296 0AD6  8B 84 0D2A R          C	                mov ax,ts[si+deltax]
+    1297 0ADA  29 84 0D2E R          C	                sub ts[si+decision],ax
+    1298 0ADE  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1299 0AE2  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1300 0AE6  E8 0000 E             C	                call get
+    1301 0AE9  25 0007               C	                and ax,7
+    1302 0AEC  3D 0004               C	                cmp ax,4
+    1303 0AEF  7C 65                 C	                jl whsk1
+    1304 0AF1  3B 06 008A R          C	                cmp ax,cloudcolor
+    1305 0AF5  75 06                 C	                jne whsk7
+    1306 0AF7  A1 00AA R             C	                mov ax,points1
+    1307 0AFA  E8 03A3 R             C	                call upscore
+    1308 0AFD                        C	        whsk7:
+    1309 0AFD  3B 06 0098 R          C	                cmp ax,warcloudcolor
+    1310 0B01  75 06                 C	                jne whsk8
+    1311 0B03  A1 00AC R             C	                mov ax,points2
+    1312 0B06  E8 03A3 R             C	                call upscore
+    1313 0B09                        C	        whsk8:
+    1314 0B09  3B 06 0092 R          C	                cmp ax,citycolor
+    1315 0B0D  75 03                 C	                jne whsk9
+    1316 0B0F  EB 6F 90              C	                jmp whcity
+    1317 0B12                        C	        whsk9:
+    1318 0B12  56                    C	                push si
+    1319 0B13  A1 0098 R             C	                mov ax,warcloudcolor
+    1320 0B16  E8 06FA R             C	                call startcloud
+    1321 0B19  BB 0001               C	                mov bx,1
+    1322 0B1C  E8 08E6 R             C	                call startsound
+    1323 0B1F  5E                    C	                pop si
+    1324 0B20                        C	        whsk10:
+    1325 0B20  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1326 0B24  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1327 0B28  87 8C 0D36 R          C	                xchg cx,ts[si+lastx]
+    1328 0B2C  87 94 0D38 R          C	                xchg dx,ts[si+lasty]
+    1329 0B30  89 8C 0D26 R          C	                mov ts[si+xpos],cx
+    1330 0B34  89 94 0D28 R          C	                mov ts[si+ypos],dx
+    1331 0B38  8B 84 0D3A R          C	                mov ax,ts[si+lastdec]
+    1332 0B3C  89 84 0D2E R          C	                mov ts[si+decision],ax
+    1333 0B40  C7 84 0D24 R 0B9D R   C	                mov ts[si+address],offs
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-26
+
+
+					et wartrace
+    1334 0B46  C7 84 0D22 R 0005     C	                mov ts[si+kind],5
+    1335 0B4C  A1 00A0 R             C	                mov ax,wartracespeed
+    1336 0B4F  89 84 0D20 R          C	                mov ts[si+skip],ax
+    1337 0B53  EB 2A 90              C	                jmp whdone
+    1338 0B56                        C	        whsk1:
+    1339 0B56  8B 84 0D30 R          C	                mov ax,ts[si+color1]
+    1340 0B5A  E8 0000 E             C	                call plot
+    1341 0B5D  EB 20 90              C	                jmp whdone
+    1342 0B60                        C	        whhoriz:
+    1343 0B60  8B 84 0D34 R          C	                mov ax,ts[si+direction]
+    1344 0B64  01 84 0D26 R          C	                add ts[si+xpos],ax
+    1345 0B68  8B 84 0D2C R          C	                mov ax,ts[si+deltay]
+    1346 0B6C  01 84 0D2E R          C	                add ts[si+decision],ax
+    1347 0B70  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1348 0B74  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1349 0B78  8B 84 0D30 R          C	                mov ax,ts[si+color1]
+    1350 0B7C  E8 0000 E             C	                call plot
+    1351 0B7F                        C	        whdone:
+    1352 0B7F  C3                    C	                ret
+    1353 0B80                        C	        whcity:
+    1354 0B80  BB 000A               C	                mov bx,10
+    1355 0B83                        C	        whc1:
+    1356 0B83  8B 87 0030 R          C	                mov ax,cityx[bx]
+    1357 0B87  3B C1                 C	                cmp ax,cx
+    1358 0B89  7E 07                 C	                jle whc2
+    1359 0B8B  83 EB 02              C	                sub bx,2
+    1360 0B8E  74 02                 C	                je whc2
+    1361 0B90  EB F1                 C	                jmp whc1
+    1362 0B92                        C	        whc2:
+    1363 0B92  FF 87 0D0C R          C	                inc cityhits[bx]
+    1364 0B96  D1 EB                 C	                shr bx,1
+    1365 0B98  E8 0762 R             C	                call nukecity
+    1366 0B9B  EB 83                 C	                jmp whsk10
+    1367			     C	
+    1368 0B9D                        C	warhead         endp
+    1369			     C	
+    1370			     C	
+    1371 0B9D                        C	wartrace        proc near
+    1372			     C	
+    1373 0B9D  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1374 0BA1  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1375 0BA5  E8 0000 E             C	                call get
+    1376 0BA8  25 0007               C	                and ax,7
+    1377 0BAB  3B 06 0096 R          C	                cmp ax,warheadcolor2
+    1378 0BAF  75 06                 C	                jne wtsk1
+    1379 0BB1  A1 0088 R             C	                mov ax,backcolor
+    1380 0BB4  E8 0000 E             C	                call plot
+    1381 0BB7                        C	        wtsk1:
+    1382 0BB7  83 BC 0D2E R 00       C	                cmp ts[si+decision],0
+    1383 0BBC  7C 17                 C	                jl wthoriz
+    1384 0BBE                        C	        wtvert:
+    1385 0BBE  FF 84 0D28 R          C	                inc ts[si+ypos]
+    1386 0BC2  8B 84 0D2A R          C	                mov ax,ts[si+deltax]
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-27
+
+
+    1387 0BC6  29 84 0D2E R          C	                sub ts[si+decision],ax
+    1388 0BCA  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1389 0BCE  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1390 0BD2  EB 19 90              C	                jmp wtdone
+    1391 0BD5                        C	        wthoriz:
+    1392 0BD5  8B 84 0D34 R          C	                mov ax,ts[si+direction]
+    1393 0BD9  01 84 0D26 R          C	                add ts[si+xpos],ax
+    1394 0BDD  8B 84 0D2C R          C	                mov ax,ts[si+deltay]
+    1395 0BE1  01 84 0D2E R          C	                add ts[si+decision],ax
+    1396 0BE5  8B 8C 0D26 R          C	                mov cx,ts[si+xpos]
+    1397 0BE9  8B 94 0D28 R          C	                mov dx,ts[si+ypos]
+    1398 0BED                        C	        wtdone:
+    1399 0BED  3B 94 0D38 R          C	                cmp dx,ts[si+lasty]
+    1400 0BF1  7C 0D                 C	                jl wtska
+    1401 0BF3  83 BC 0D34 R 00       C	                cmp ts[si+direction],0
+    1402 0BF8  7F 07                 C	                jg wtskb
+    1403 0BFA  3B 8C 0D36 R          C	                cmp cx,ts[si+lastx]
+    1404 0BFE  7E 08                 C	                jle wtend
+    1405 0C00                        C	        wtska:
+    1406 0C00  C3                    C	                ret
+    1407 0C01                        C	        wtskb:
+    1408 0C01  3B 8C 0D36 R          C	                cmp cx,ts[si+lastx]
+    1409 0C05  7D 01                 C	                jge wtend
+    1410 0C07  C3                    C	                ret
+    1411 0C08                        C	        wtend:
+    1412 0C08  E8 063E R             C	                call endtask
+    1413 0C0B  C3                    C	                ret
+    1414			     C	
+    1415 0C0C                        C	wartrace        endp
+    1416			     C	
+    1417			     C	
+    1418 0C0C                        C	sound           proc near
+    1419			     C	
+    1420 0C0C  8B 84 0D2C R          C	                mov ax,ts[si+value]
+    1421 0C10  83 B4 0D2C R 02       C	                xor ts[si+value],2
+    1422 0C15  E6 61                 C	                out 61h,al
+    1423 0C17  FF 8C 0D2E R          C	                dec ts[si+cycles]
+    1424 0C1B  83 BC 0D2E R 00       C	                cmp ts[si+cycles],0
+    1425 0C20  7E 0D                 C	                jle snddone
+    1426 0C22  8B 84 0D2A R          C	                mov ax,ts[si+altskip]
+    1427 0C26  87 84 0D20 R          C	                xchg ts[si+skip],ax
+    1428 0C2A  89 84 0D2A R          C	                mov ts[si+altskip],ax
+    1429 0C2E  C3                    C	                ret
+    1430 0C2F                        C	        snddone:
+    1431 0C2F  E8 063E R             C	                call endtask
+    1432 0C32  C3                    C	                ret
+    1433			     C	
+    1434 0C33                        C	sound           endp
+    1435			     C	
+    1436			     C	
+    1437				
+    1438				
+    1439				                include mouse.asm
+    1440 0C33                        C	mothand         proc near
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-28
+
+
+    1441			     C	
+    1442 0C33  B8 000B               C	                mov ax,0bh
+    1443 0C36  CD 33                 C	                int 33h
+    1444 0C38  8B C1                 C	                mov ax,cx
+    1445 0C3A  03 C2                 C	                add ax,dx
+    1446 0C3C  3D 0000               C	                cmp ax,0
+    1447 0C3F  74 42                 C	                je motdone
+    1448 0C41  E8 0CCB R             C	                call mouseoff
+    1449 0C44  D1 E1                 C	                shl cx,1
+    1450 0C46  D1 E2                 C	                shl dx,1
+    1451 0C48  03 0E 0CEC R          C	                add cx,mousex
+    1452 0C4C  03 16 0CEE R          C	                add dx,mousey
+    1453 0C50  3B 0E 000A R          C	                cmp cx,cursminx
+    1454 0C54  7D 04                 C	                jge motsk1
+    1455 0C56  8B 0E 000A R          C	                mov cx,cursminx
+    1456 0C5A                        C	        motsk1:
+    1457 0C5A  3B 0E 000E R          C	                cmp cx,cursmaxx
+    1458 0C5E  7E 04                 C	                jle motsk2
+    1459 0C60  8B 0E 000E R          C	                mov cx,cursmaxx
+    1460 0C64                        C	        motsk2:
+    1461 0C64  3B 16 000C R          C	                cmp dx,cursminy
+    1462 0C68  7D 04                 C	                jge motsk3
+    1463 0C6A  8B 16 000C R          C	                mov dx,cursminy
+    1464 0C6E                        C	        motsk3:
+    1465 0C6E  3B 16 0010 R          C	                cmp dx,cursmaxy
+    1466 0C72  7E 04                 C	                jle motsk4
+    1467 0C74  8B 16 0010 R          C	                mov dx,cursmaxy
+    1468 0C78                        C	        motsk4:
+    1469 0C78  89 0E 0CEC R          C	                mov mousex,cx
+    1470 0C7C  89 16 0CEE R          C	                mov mousey,dx
+    1471 0C80  E8 0CA1 R             C	                call mouseon
+    1472 0C83                        C	        motdone:
+    1473 0C83  C3                    C	                ret
+    1474			     C	
+    1475 0C84                        C	mothand         endp
+    1476			     C	
+    1477			     C	
+    1478 0C84                        C	getbuttons      proc near
+    1479			     C	
+    1480			     C	
+    1481 0C84  50                    C	                push ax
+    1482 0C85  B8 0003               C	                mov ax,3
+    1483 0C88  CD 33                 C	                int 33h
+    1484 0C8A  B8 0000               C	                mov ax,0
+    1485 0C8D  8E C0                 C	                mov es,ax
+    1486 0C8F  26: A1 0417           C	                mov ax,es:[417h]
+    1487 0C93  C1 E8 02              C	                shr ax,2
+    1488 0C96  25 0003               C	                and ax,3
+    1489 0C99  0B D8                 C	                or bx,ax
+    1490 0C9B  8E 06 0000 R          C	                mov es,vidseg
+    1491 0C9F  58                    C	                pop ax
+    1492 0CA0  C3                    C	                ret
+    1493			     C	
+    1494 0CA1                        C	getbuttons      endp
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-29
+
+
+    1495			     C	
+    1496			     C	
+    1497 0CA1                        C	mouseon         proc near
+    1498			     C	
+    1499 0CA1  60                    C	                pusha
+    1500			     C	
+    1501 0CA2  B8 0008               C	                mov ax,8
+    1502 0CA5  8B 0E 0CEC R          C	                mov cx,mousex
+    1503 0CA9  8B 16 0CEE R          C	                mov dx,mousey
+    1504 0CAD  8B F1                 C	                mov si,cx
+    1505 0CAF  8B FA                 C	                mov di,dx
+    1506 0CB1  83 E9 05              C	                sub cx,5
+    1507 0CB4  83 EA 05              C	                sub dx,5
+    1508 0CB7  83 C6 05              C	                add si,5
+    1509 0CBA  83 C7 05              C	                add di,5
+    1510 0CBD  E8 0000 E             C	                call oline
+    1511 0CC0  83 C2 0A              C	                add dx,10
+    1512 0CC3  83 EF 0A              C	                sub di,10
+    1513 0CC6  E8 0000 E             C	                call oline
+    1514			     C	
+    1515 0CC9  61                    C	                popa
+    1516 0CCA  C3                    C	                ret
+    1517			     C	
+    1518 0CCB                        C	mouseon         endp
+    1519			     C	
+    1520			     C	
+    1521 0CCB                        C	mouseoff        proc near
+    1522			     C	
+    1523 0CCB  60                    C	                pusha
+    1524			     C	
+    1525 0CCC  B8 0007               C	                mov ax,7
+    1526 0CCF  8B 0E 0CEC R          C	                mov cx,mousex
+    1527 0CD3  8B 16 0CEE R          C	                mov dx,mousey
+    1528 0CD7  8B F1                 C	                mov si,cx
+    1529 0CD9  8B FA                 C	                mov di,dx
+    1530 0CDB  83 E9 05              C	                sub cx,5
+    1531 0CDE  83 EA 05              C	                sub dx,5
+    1532 0CE1  83 C6 05              C	                add si,5
+    1533 0CE4  83 C7 05              C	                add di,5
+    1534 0CE7  E8 0000 E             C	                call aline
+    1535 0CEA  83 C2 0A              C	                add dx,10
+    1536 0CED  83 EF 0A              C	                sub di,10
+    1537 0CF0  E8 0000 E             C	                call aline
+    1538			     C	
+    1539 0CF3  61                    C	                popa
+    1540 0CF4  C3                    C	                ret
+    1541			     C	
+    1542 0CF5                        C	mouseoff        endp
+    1543			     C	
+    1544			     C	
+    1545 0CF5                        C	crosson         proc near
+    1546			     C	
+    1547 0CF5  60                    C	                pusha
+    1548			     C	
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-30
+
+
+    1549 0CF6  A1 008E R             C	                mov ax,mcolor2
+    1550 0CF9  8B 0E 0CEC R          C	                mov cx,mousex
+    1551 0CFD  8B 16 0CEE R          C	                mov dx,mousey
+    1552 0D01  8B F1                 C	                mov si,cx
+    1553 0D03  8B FA                 C	                mov di,dx
+    1554 0D05  83 E9 05              C	                sub cx,5
+    1555 0D08  83 C6 05              C	                add si,5
+    1556 0D0B  E8 0000 E             C	                call line
+    1557 0D0E  83 EE 05              C	                sub si,5
+    1558 0D11  83 C1 05              C	                add cx,5
+    1559 0D14  83 EA 05              C	                sub dx,5
+    1560 0D17  83 C7 05              C	                add di,5
+    1561 0D1A  E8 0000 E             C	                call line
+    1562			     C	
+    1563 0D1D  61                    C	                popa
+    1564 0D1E  C3                    C	                ret
+    1565			     C	
+    1566 0D1F                        C	crosson         endp
+    1567				
+    1568				
+    1569				                .data
+    1570 0D1F				@CurSeg ends
+    1571 0000				_DATA segment 'DATA'
+    1572				
+    1573				
+    1574 0000  A000			vidseg          dw 0a000h
+    1575 0002  ---- R			dataseg         dw @data
+    1576 0004  0000			bytesperline    dw 0
+    1577 0006  0037			maxtask         dw 55
+    1578 0008  0013			maxwave         dw 19
+    1579				
+    1580 = 027F				maxx            equ 639
+    1581 = 01DF				maxy            equ 479
+    1582 000A  0005			cursminx        dw 5
+    1583 000C  0005			cursminy        dw 5
+    1584 000E  027A			cursmaxx        dw 634
+    1585 0010  01A3			cursmaxy        dw 419
+    1586 0012  00CD			xlaunch1        dw 205
+    1587 0014  01B2			xlaunch2        dw 434
+    1588 0016  01AD			ylaunch         dw 429
+    1589 0018  01CE			citydeck        dw 462
+    1590 001A  00A0			splitdeck       dw 160
+    1591 001C  01AD			clouddeck       dw 429
+    1592 001E  0023 0011 002E		nukex           dw 35,17,46
+    1593 0024  FFE7 FFED FFED		nukey           dw -25,-19,-19
+    1594 002A  0000 00FA 0258		nuket           dw 0,250,600
+    1595 0030  000C 006A 00F1 014F	cityx           dw 12,106,241,335,470,5
+					64
+    1596       01D6 0234		
+    1597 003C  002C 008A 00CD 0111	targetx         dw 44,138,205,273,367,4
+					34,502,596
+    1598       016F 01B2 01F6 0254	
+    1599 004C  0000 FFF9 0007 FFF2	missilex        dw 0,-7,7,-14,0,14,-21,
+					-7,7,21,-28,-14,0,14,28
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-31
+
+
+    1600       0000 000E FFEB FFF9	
+    1601       0007 0015 FFE4 FFF2	
+    1602       0000 000E 001C		
+    1603 006A  0003 000A 000A 0011	missiley        dw 3,10,10,17,17,17,24,
+					24,24,24,33,33,33,33,33
+    1604       0011 0011 0018 0018	
+    1605       0018 0018 0021 0021	
+    1606       0021 0021 0021		
+    1607				
+    1608 0088  0000			backcolor       dw 0
+    1609 008A  0004			cloudcolor      dw 4
+    1610 008C  0003			mcolor1         dw 3
+    1611 008E  0001			mcolor2         dw 1
+    1612 0090  0006			groundcolor     dw 6
+    1613 0092  0007			citycolor       dw 7
+    1614 0094  0003			warheadcolor1   dw 3
+    1615 0096  0002			warheadcolor2   dw 2
+    1616 0098  0005			warcloudcolor   dw 5
+    1617				
+    1618 009A  002D			cloudrad        dw 45
+    1619 009C  0050			cloudspeed      dw 80
+    1620 009E  0002			miss1speed      dw 2
+    1621 00A0  0003			wartracespeed   dw 3
+    1622 00A2  012C			tracewait       dw 300
+    1623 00A4  00FA			bonusgap        dw 250
+    1624 00A6  0190			cdwait          dw 400
+    1625 00A8  0096			mdwait          dw 150
+    1626				
+    1627 00AA  0002			points1         dw 2
+    1628 00AC  0004			points2         dw 4
+    1629 00AE  0001			points3         dw 1
+    1630 00B0  000A			points4         dw 10
+    1631				
+    1632 00B2  0001 0002 0014		frequ0          dw 1,2,20
+    1633 00B8  0032 0014 0014		frequ1          dw 50,20,20
+    1634 00BE  000A 0006 003C		frequc          dw 10,6 ,60
+    1635				
+    1636 00C4  0005 001E 07D0 0004	wave0           dw 5,30,2000,4,10000,4,
+					10000,4,0,-1
+    1637       2710 0004 2710 0004	
+    1638       0000 FFFF		
+    1639 00D8  0005 001E 07D0 0004	wave1           dw 5,30,2000,4,10000,5,
+					10000,6,0,-1
+    1640       2710 0005 2710 0006	
+    1641       0000 FFFF		
+    1642 00EC  0005 0014 07D0 0005	wave2           dw 5,20,2000,5,10000,6,
+					10000,2,19000,2,9000,8,0,-1
+    1643       2710 0006 2710 0002	
+    1644       4A38 0002 2328 0008	
+    1645       0000 FFFF		
+    1646 0108  0002 0014 07D0 0006	wave3           dw 2,20,2000,6,10000,3,
+					10000,1,1500,1,1500,1,1500,1,1500,8,0,-
+					1
+    1647       2710 0003 2710 0001	
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-32
+
+
+    1648       05DC 0001 05DC 0001	
+    1649       05DC 0001 05DC 0008	
+    1650       0000 FFFF		
+    1651 012C  0002 0012 07D0 0003	wave4           dw 2,18,2000,3,10000,3,
+					10000,3,10000,3,10000,5,10000,5,0,-1
+    1652       2710 0003 2710 0003	
+    1653       2710 0003 2710 0005	
+    1654       2710 0005 0000 FFFF	
+    1655 014C  0002 0011 07D0 0004	wave5           dw 2,17,2000,4,10000,4,
+					10000,8,10000,2,10000,2,10000,5,0,-1
+    1656       2710 0004 2710 0008	
+    1657       2710 0002 2710 0002	
+    1658       2710 0005 0000 FFFF	
+    1659 016C  0003 0010 07D0 0003	wave6           dw 3,16,2000,3,10000,3,
+					10000,3,10000,3,10000,5,10000,5,0,-1
+    1660       2710 0003 2710 0003	
+    1661       2710 0003 2710 0005	
+    1662       2710 0005 0000 FFFF	
+    1663 018C  0003 000F 07D0 0004	wave7           dw 3,15,2000,4,10000,4,
+					10000,8,10000,2,10000,2,10000,5,0,-1
+    1664       2710 0004 2710 0008	
+    1665       2710 0002 2710 0002	
+    1666       2710 0005 0000 FFFF	
+    1667 01AC  0003 000E 07D0 0004	wave8           dw 3,14,2000,4,5000,4,5
+					000,4,5000,4,5000,4,5000,4,0,-1
+    1668       1388 0004 1388 0004	
+    1669       1388 0004 1388 0004	
+    1670       1388 0004 0000 FFFF	
+    1671 01CC  0007 000D 0FA0 0005	wave9           dw 7,13,4000,5,4000,5,4
+					000,5,3000,3,3000,3,3000,3,5000,5,0,-1
+    1672       0FA0 0005 0FA0 0005	
+    1673       0BB8 0003 0BB8 0003	
+    1674       0BB8 0003 1388 0005	
+    1675       0000 FFFF		
+    1676 01F0  0007 000C 0BB8 0004	wave10          dw 7,12,3000,4,4000,4,3
+					500,4,3000,4,2500,4,2000,4,1500,4,0,-1
+    1677       0FA0 0004 0DAC 0004	
+    1678       0BB8 0004 09C4 0004	
+    1679       07D0 0004 05DC 0004	
+    1680       0000 FFFF		
+    1681 0214  0007 000C 0BB8 0006	wave11          dw 7,12,3000,6,6000,6,6
+					000,6,6000,6,10000,4,7000,4,0,-1
+    1682       1770 0006 1770 0006	
+    1683       1770 0006 2710 0004	
+    1684       1B58 0004 0000 FFFF	
+    1685 0234  0001 0009 1B58 0002	wave12          dw 1,9,7000,2,5000,2,50
+					00,2,5000,2,5000,2,0,-1
+    1686       1388 0002 1388 0002	
+    1687       1388 0002 1388 0002	
+    1688       0000 FFFF		
+    1689 0250  0001 0009 1B58 0002	wave13          dw 1,9,7000,2,8000,2,80
+					00,3,5000,3,5000,2,8000,6,0,-1
+    1690       1F40 0002 1F40 0003	
+    1691       1388 0003 1388 0002	
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-33
+
+
+    1692       1F40 0006 0000 FFFF	
+    1693 0270  0001 000C 07D0 0006	wave14          dw 1,12,2000,6,7000,6,7
+					000,6,7000,3,4000,3,4000,7,4000,2,0,-1
+    1694       1B58 0006 1B58 0006	
+    1695       1B58 0003 0FA0 0003	
+    1696       0FA0 0007 0FA0 0002	
+    1697       0000 FFFF		
+    1698 0294  0002 000B 07D0 0004	wave15          dw 2,11,2000,4,5000,4,5
+					000,4,5000,4,5000,4,5000,4,5000,4,0,-1
+    1699       1388 0004 1388 0004	
+    1700       1388 0004 1388 0004	
+    1701       1388 0004 1388 0004	
+    1702       0000 FFFF		
+    1703 02B8  0003 000A 07D0 0003	wave16          dw 3,10,2000,3,5000,3,5
+					000,3,5000,3,5000,3,5000,3,5000,3,0,-1
+    1704       1388 0003 1388 0003	
+    1705       1388 0003 1388 0003	
+    1706       1388 0003 1388 0003	
+    1707       0000 FFFF		
+    1708 02DC  0004 000C 07D0 0008	wave17          dw 4,12,2000,8,8000,8,8
+					000,8,8000,1,5000,1,5000,6,0,-1
+    1709       1F40 0008 1F40 0008	
+    1710       1F40 0001 1388 0001	
+    1711       1388 0006 0000 FFFF	
+    1712 02FC  0005 000B 07D0 0005	wave18          dw 5,11,2000,5,3000,5,3
+					000,5,3000,5,3000,5,3000,5,0,-1
+    1713       0BB8 0005 0BB8 0005	
+    1714       0BB8 0005 0BB8 0005	
+    1715       0BB8 0005 0000 FFFF	
+    1716 031C  0007 000C 07D0 0004	wave19          dw 7,12,2000,4,10000,4,
+					10000,8,10000,2,10000,2,10000,5,0,-1
+    1717       2710 0004 2710 0008	
+    1718       2710 0002 2710 0002	
+    1719       2710 0005 0000 FFFF	
+    1720				
+    1721				
+    1722				
+    1723				
+    1724				
+    1725				
+    1726				
+    1727 033C  00 01 02 03 04 05	preppall        db 0,1,2,3,4,5,6,7,8,9,
+					10,11,12,13,14,15,0
+    1728       06 07 08 09 0A 0B	
+    1729       0C 0D 0E 0F 00		
+    1730				
+    1731 034D  00 10 20 3F 3F 00	palltable       db 0,16,32, 63,63,0, 63
+					,0,0, 63,63,63, 48,48,48, 40,40,40
+    1732       3F 00 00 3F 3F 3F	
+    1733       30 30 30 28 28 28	
+    1734 035F  20 18 00 20 20 20	                db 32,24,0, 32,32,32, 0
+					,0,0
+    1735       00 00 00			
+    1736 0368  20 0A 0A 00 00 3B	                db 32,10,10, 0,0,59, 10
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-34
+
+
+					,63,10, 63,63,63, 63,63,0, 0,48,48
+    1737       0A 3F 0A 3F 3F 3F	
+    1738       3F 3F 00 00 30 30	
+    1739 037A  20 20 0A 00 00 30	                db 32,32,10, 0,0,48, 63
+					,63,63
+    1740       3F 3F 3F			
+    1741 0383  00 00 00 00 20 00	                db 0,0,0, 0,32,0, 0,0,3
+					2, 63,63,63, 0,63,0, 0,0,63
+    1742       00 00 20 3F 3F 3F	
+    1743       00 3F 00 00 00 3F	
+    1744 0395  0F 20 20 30 18 00	                db 15,32,32, 48,24,0, 6
+					3,0,63
+    1745       3F 00 3F			
+    1746 039E  3F 3F 3F 30 30 30	                db 63,63,63, 48,48,48, 
+					32,32,32, 0,0,0, 0,0,0, 20,20,20
+    1747       20 20 20 00 00 00	
+    1748       00 00 00 14 14 14	
+    1749 03B0  19 19 19 00 20 20	                db 25,25,25, 0,32,32, 0
+					,0,0
+    1750       00 00 00			
+    1751				
+    1752				
+    1753				
+    1754				                include shapes.asm
+    1755 03B9  0000                  C	city1x          dw 0
+    1756 03BB  FFEA                  C	city1y          dw -22
+    1757 03BD  0015                  C	city1h          dw 21
+    1758 03BF  0008[                 C	city1           db 8 dup(1),0,7,7,7,0,5
+					 dup(7fh),80h,-1,1fh
+    1759	   01                C	
+    1760			 ]   C	
+    1761       00 07 07 07 00        C	
+    1762       0005[                 C	
+    1763	   7F                C	
+    1764			 ]   C	
+    1765       80 FF 1F              C	
+    1766			     C	
+    1767 03D4  0008                  C	city2x          dw 8
+    1768 03D6  FFEA                  C	city2y          dw -22
+    1769 03D8  0016                  C	city2h          dw 22
+    1770 03DA  0008[                 C	city2           db 8 dup(0fch),0,-1,-1,
+					-1,1eh,5 dup(0eeh),10h,-1,-1,-1
+    1771	   FC                C	
+    1772			 ]   C	
+    1773       00 FF FF FF 1E        C	
+    1774       0005[                 C	
+    1775	   EE                C	
+    1776			 ]   C	
+    1777       10 FF FF FF           C	
+    1778			     C	
+    1779 03F0  0010                  C	city3x          dw 16
+    1780 03F2  FFE5                  C	city3y          dw -27
+    1781 03F4  001C                  C	city3h          dw 28
+    1782 03F6  000D[                 C	city3           db 13 dup(7fh),3fh,0dfh
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-35
+
+
+					,0dfh,0,7 dup(0ffh),0,-1,-1,-1
+    1783	   7F                C	
+    1784			 ]   C	
+    1785       3F DF DF 00           C	
+    1786       0007[                 C	
+    1787	   FF                C	
+    1788			 ]   C	
+    1789       00 FF FF FF           C	
+    1790			     C	
+    1791 0412  0018                  C	city4x          dw 24
+    1792 0414  FFE0                  C	city4y          dw -32
+    1793 0416  0021                  C	city4h          dw 33
+    1794 0418  000A[                 C	city4           db 10 dup(7),0,10 dup(7
+					fh),3fh,7 dup(0dfh),20h,-1,-1,-1
+    1795	   07                C	
+    1796			 ]   C	
+    1797       00                    C	
+    1798       000A[                 C	
+    1799	   7F                C	
+    1800			 ]   C	
+    1801       3F                    C	
+    1802       0007[                 C	
+    1803	   DF                C	
+    1804			 ]   C	
+    1805       20 FF FF FF           C	
+    1806			     C	
+    1807 0439  0020                  C	city5x          dw 32
+    1808 043B  FFE0                  C	city5y          dw -32
+    1809 043D  0021                  C	city5h          dw 33
+    1810 043F  000A[                 C	city5           db 10 dup(0fch),7ch,0bc
+					h,0b0h,7 dup(0afh),0ach,7 dup(0abh),93h
+					,7ch,-1,-1,-1
+    1811	   FC                C	
+    1812			 ]   C	
+    1813       7C BC B0              C	
+    1814       0007[                 C	
+    1815	   AF                C	
+    1816			 ]   C	
+    1817       AC                    C	
+    1818       0007[                 C	
+    1819	   AB                C	
+    1820			 ]   C	
+    1821       93 7C FF FF FF        C	
+    1822			     C	
+    1823 0460  0028                  C	city6x          dw 40
+    1824 0462  FFE9                  C	city6y          dw -23
+    1825 0464  0018                  C	city6h          dw 24
+    1826 0466  0003[                 C	city6           db 3 dup(1fh),3,7 dup(0
+					fdh),0,8 dup(-1),0,-1,-1,-1
+    1827	   1F                C	
+    1828			 ]   C	
+    1829       03                    C	
+    1830       0007[                 C	
+    1831	   FD                C	
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-36
+
+
+    1832			 ]   C	
+    1833       00                    C	
+    1834       0008[                 C	
+    1835	   FF                C	
+    1836			 ]   C	
+    1837       00 FF FF FF           C	
+    1838			     C	
+    1839 047E  0030                  C	city7x          dw 48
+    1840 0480  FFE9                  C	city7y          dw -23
+    1841 0482  0017                  C	city7h          dw 23
+    1842 0484  0004[                 C	city7           db 4 dup(0f8h),0c0h,4 d
+					up(0bfh),0beh,0beh,1eh,7 dup(0eeh),0e1h
+					,1fh,-1,-1
+    1843	   F8                C	
+    1844			 ]   C	
+    1845       C0                    C	
+    1846       0004[                 C	
+    1847	   BF                C	
+    1848			 ]   C	
+    1849       BE BE 1E              C	
+    1850       0007[                 C	
+    1851	   EE                C	
+    1852			 ]   C	
+    1853       E1 1F FF FF           C	
+    1854			     C	
+    1855 049B  0038                  C	city8x          dw 56
+    1856 049D  FFEE                  C	city8y          dw -18
+    1857 049F  0011                  C	city8h          dw 17
+    1858 04A1  0003[                 C	city8           db 3 dup(0e0h),0,10 dup
+					(0feh),1,-1,0f8h
+    1859	   E0                C	
+    1860			 ]   C	
+    1861       00                    C	
+    1862       000A[                 C	
+    1863	   FE                C	
+    1864			 ]   C	
+    1865       01 FF F8              C	
+    1866			     C	
+    1867 04B2  10 10 38 38 38 38     C	missile         db 10h,10h,38h,38h,38h,
+					38h,7ch,0feh
+    1868       7C FE                 C	
+    1869			     C	
+    1870			     C	
+    1871			     C	
+    1872			     C	
+    1873			     C	
+    1874				
+    1875 04BA  0008			charheight      dw 8
+    1876 04BC  0800[			chartable       db 2048 dup ( 0 )
+    1877	   00			
+    1878			 ]	
+    1879				
+    1880				
+    1881 0CBC  0030[			utilpall        db 48 dup( 0 )
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-37
+
+
+    1882	   00			
+    1883			 ]	
+    1884				
+    1885				
+    1886				
+    1887 0CEC  00C8			mousex          dw 200
+    1888 0CEE  00C8			mousey          dw 200
+    1889 0CF0  0000			termflag        dw 0
+    1890 0CF2  0000			curtask         dw 0
+    1891 0CF4  0000			lasttask        dw 0
+    1892 0CF6  0000			butflag         dw 0
+    1893 0CF8  0000			missleft        dw 0
+    1894 0CFA  0000			missright       dw 0
+    1895 0CFC  0000			nextbonus       dw 0
+    1896 0CFE  0000			bonuscitys      dw 0
+    1897 0D00  0014			warheadspeed    dw 20
+    1898 0D02  0000			score           dw 0
+    1899 0D04  00 00 00 00 00 00	scorestring     db 0,0,0,0,0,0,0,0
+    1900       00 00			
+    1901 0D0C  0000 0000 0000 0000	cityhits        dw 0,0,0,0,0,0
+    1902       0000 0000		
+    1903 0D18  0000			citys           dw 0
+    1904 0D1A  0000			wavenumber      dw 0
+    1905 0D1C  0000			wavepointer     dw 0
+    1906				
+    1907 0D1E  0040[			ts              dw 64 dup(16 dup(0))   
+					 ;space for up to 64 tasks with 32 byte
+					s
+    1908	0010[			
+    1909	    0000		
+    1910			]	
+    1911			 ]	
+    1912				
+    1913				
+    1914 = 0000				time            equ 0                  
+					 ;position names for all tasks
+    1915 = 0002				skip            equ 2
+    1916 = 0004				kind            equ 4
+    1917 = 0006				address         equ 6
+    1918 = 0008				xpos            equ 8
+    1919 = 000A				ypos            equ 10
+    1920				
+    1921 = 000C				deltax          equ 12                 
+					 ;additional position names for
+    1922 = 000E				deltay          equ 14                 
+					 ; missiles types 1,2,3,5
+    1923 = 0010				decision        equ 16
+    1924 = 0012				color1          equ 18
+    1925 = 0014				color2          equ 20
+    1926 = 0016				direction       equ 22
+    1927 = 0018				lastx           equ 24
+    1928 = 001A				lasty           equ 26
+    1929 = 001C				lastdec         equ 28
+    1930 = 001E				target          equ 30
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Page     1-38
+
+
+    1931				
+    1932 = 000C				radius          equ 12                 
+					 ;additional position names for
+    1933 = 001C				maxradius       equ 28                 
+					 ;cloud 4
+    1934 = 0012				color           equ 18
+    1935				
+    1936 = 000C				mode            equ 12                 
+					 ;position names for wave
+    1937 = 000E				clicks          equ 14
+    1938				
+    1939 = 000C				altskip         equ 12
+    1940 = 000E				value           equ 14
+    1941 = 0010				cycles          equ 16
+    1942 = 0012				notepointer     equ 18
+    1943 = 0014				nextnote        equ 20
+    1944				
+    1945				
+    1946				                end main
+    1947 151E				@CurSeg ends
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Symbols-1
+
+
+Segments and Groups:
+
+                N a m e         	Length	 Align	Combine Class
+
+DGROUP . . . . . . . . . . . . .  	GROUP
+  _DATA  . . . . . . . . . . . .  	151E	WORD	PUBLIC	'DATA'
+  STACK  . . . . . . . . . . . .  	0400	PARA	STACK	'STACK'
+MIS_TEXT . . . . . . . . . . . .  	0D1F	WORD	PUBLIC	'CODE'
+
+Symbols:            
+
+                N a m e         	Type	 Value	 Attr
+
+ADDRESS  . . . . . . . . . . . .  	NUMBER	0006	
+aline  . . . . . . . . . . . . .  	L NEAR	0000		External
+ALTSKIP  . . . . . . . . . . . .  	NUMBER	000C	
+
+BACKCOLOR  . . . . . . . . . . .  	L WORD	0088	_DATA
+BCDONE . . . . . . . . . . . . .  	L NEAR	05F2	MIS_TEXT
+BCLP1  . . . . . . . . . . . . .  	L NEAR	05CD	MIS_TEXT
+BCSK2  . . . . . . . . . . . . .  	L NEAR	05D5	MIS_TEXT
+BODY . . . . . . . . . . . . . .  	N PROC	0039	MIS_TEXT	Length = 0004
+BONUSCITY  . . . . . . . . . . .  	N PROC	059C	MIS_TEXT	Length = 0057
+BONUSCITYS . . . . . . . . . . .  	L WORD	0CFE	_DATA
+BONUSGAP . . . . . . . . . . . .  	L WORD	00A4	_DATA
+BUTFLAG  . . . . . . . . . . . .  	L WORD	0CF6	_DATA
+bytesperline . . . . . . . . . .  	L WORD	0004	_DATA	Global
+
+CDWAIT . . . . . . . . . . . . .  	L WORD	00A6	_DATA
+charheight . . . . . . . . . . .  	L WORD	04BA	_DATA	Global
+chartable  . . . . . . . . . . .  	L BYTE	04BC	_DATA	Global	Length = 0800
+circle . . . . . . . . . . . . .  	L NEAR	0000		External
+CITY1  . . . . . . . . . . . . .  	L BYTE	03BF	_DATA	Length = 0008
+CITY1H . . . . . . . . . . . . .  	L WORD	03BD	_DATA
+CITY1X . . . . . . . . . . . . .  	L WORD	03B9	_DATA
+CITY1Y . . . . . . . . . . . . .  	L WORD	03BB	_DATA
+CITY2  . . . . . . . . . . . . .  	L BYTE	03DA	_DATA	Length = 0008
+CITY2H . . . . . . . . . . . . .  	L WORD	03D8	_DATA
+CITY2X . . . . . . . . . . . . .  	L WORD	03D4	_DATA
+CITY2Y . . . . . . . . . . . . .  	L WORD	03D6	_DATA
+CITY3  . . . . . . . . . . . . .  	L BYTE	03F6	_DATA	Length = 000D
+CITY3H . . . . . . . . . . . . .  	L WORD	03F4	_DATA
+CITY3X . . . . . . . . . . . . .  	L WORD	03F0	_DATA
+CITY3Y . . . . . . . . . . . . .  	L WORD	03F2	_DATA
+CITY4  . . . . . . . . . . . . .  	L BYTE	0418	_DATA	Length = 000A
+CITY4H . . . . . . . . . . . . .  	L WORD	0416	_DATA
+CITY4X . . . . . . . . . . . . .  	L WORD	0412	_DATA
+CITY4Y . . . . . . . . . . . . .  	L WORD	0414	_DATA
+CITY5  . . . . . . . . . . . . .  	L BYTE	043F	_DATA	Length = 000A
+CITY5H . . . . . . . . . . . . .  	L WORD	043D	_DATA
+CITY5X . . . . . . . . . . . . .  	L WORD	0439	_DATA
+CITY5Y . . . . . . . . . . . . .  	L WORD	043B	_DATA
+CITY6  . . . . . . . . . . . . .  	L BYTE	0466	_DATA	Length = 0003
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Symbols-2
+
+
+CITY6H . . . . . . . . . . . . .  	L WORD	0464	_DATA
+CITY6X . . . . . . . . . . . . .  	L WORD	0460	_DATA
+CITY6Y . . . . . . . . . . . . .  	L WORD	0462	_DATA
+CITY7  . . . . . . . . . . . . .  	L BYTE	0484	_DATA	Length = 0004
+CITY7H . . . . . . . . . . . . .  	L WORD	0482	_DATA
+CITY7X . . . . . . . . . . . . .  	L WORD	047E	_DATA
+CITY7Y . . . . . . . . . . . . .  	L WORD	0480	_DATA
+CITY8  . . . . . . . . . . . . .  	L BYTE	04A1	_DATA	Length = 0003
+CITY8H . . . . . . . . . . . . .  	L WORD	049F	_DATA
+CITY8X . . . . . . . . . . . . .  	L WORD	049B	_DATA
+CITY8Y . . . . . . . . . . . . .  	L WORD	049D	_DATA
+CITYCOLOR  . . . . . . . . . . .  	L WORD	0092	_DATA
+CITYDECK . . . . . . . . . . . .  	L WORD	0018	_DATA
+CITYHITS . . . . . . . . . . . .  	L WORD	0D0C	_DATA
+CITYS  . . . . . . . . . . . . .  	L WORD	0D18	_DATA
+CITYX  . . . . . . . . . . . . .  	L WORD	0030	_DATA
+CLDONE . . . . . . . . . . . . .  	L NEAR	097F	MIS_TEXT
+CLDOWN . . . . . . . . . . . . .  	L NEAR	0961	MIS_TEXT
+clearscreen  . . . . . . . . . .  	L NEAR	0000		External
+CLICK  . . . . . . . . . . . . .  	N PROC	0503	MIS_TEXT	Length = 001E
+CLICKS . . . . . . . . . . . . .  	NUMBER	000E	
+CLOSE  . . . . . . . . . . . . .  	N PROC	00AF	MIS_TEXT	Length = 0012
+CLOUD  . . . . . . . . . . . . .  	N PROC	0937	MIS_TEXT	Length = 0049
+CLOUDCOLOR . . . . . . . . . . .  	L WORD	008A	_DATA
+CLOUDDECK  . . . . . . . . . . .  	L WORD	001C	_DATA
+CLOUDRAD . . . . . . . . . . . .  	L WORD	009A	_DATA
+CLOUDSPEED . . . . . . . . . . .  	L WORD	009C	_DATA
+CLSK1  . . . . . . . . . . . . .  	L NEAR	0514	MIS_TEXT
+CLUP . . . . . . . . . . . . . .  	L NEAR	093E	MIS_TEXT
+CLUPTDN  . . . . . . . . . . . .  	L NEAR	095C	MIS_TEXT
+COLOR  . . . . . . . . . . . . .  	NUMBER	0012	
+COLOR1 . . . . . . . . . . . . .  	NUMBER	0012	
+COLOR2 . . . . . . . . . . . . .  	NUMBER	0014	
+CROSSON  . . . . . . . . . . . .  	N PROC	0CF5	MIS_TEXT	Length = 002A
+CURSMAXX . . . . . . . . . . . .  	L WORD	000E	_DATA
+CURSMAXY . . . . . . . . . . . .  	L WORD	0010	_DATA
+CURSMINX . . . . . . . . . . . .  	L WORD	000A	_DATA
+CURSMINY . . . . . . . . . . . .  	L WORD	000C	_DATA
+CURTASK  . . . . . . . . . . . .  	L WORD	0CF2	_DATA
+CYCLES . . . . . . . . . . . . .  	NUMBER	0010	
+
+DATASEG  . . . . . . . . . . . .  	L WORD	0002	_DATA
+DECISION . . . . . . . . . . . .  	NUMBER	0010	
+DELTAX . . . . . . . . . . . . .  	NUMBER	000C	
+DELTAY . . . . . . . . . . . . .  	NUMBER	000E	
+DIRECTION  . . . . . . . . . . .  	NUMBER	0016	
+DOSCREEN . . . . . . . . . . . .  	N PROC	025B	MIS_TEXT	Length = 0078
+drawchar . . . . . . . . . . . .  	L NEAR	0000		External
+DRAWCITY . . . . . . . . . . . .  	N PROC	03CE	MIS_TEXT	Length = 00CB
+DSLP1  . . . . . . . . . . . . .  	L NEAR	026D	MIS_TEXT
+DSLP2  . . . . . . . . . . . . .  	L NEAR	02AD	MIS_TEXT
+DSNCD  . . . . . . . . . . . . .  	L NEAR	02BE	MIS_TEXT
+DSSK1  . . . . . . . . . . . . .  	L NEAR	0284	MIS_TEXT
+
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Symbols-3
+
+
+ENDTASK  . . . . . . . . . . . .  	N PROC	063E	MIS_TEXT	Length = 0028
+
+FBLOOP1  . . . . . . . . . . . .  	L NEAR	04F0	MIS_TEXT
+FILLBASE . . . . . . . . . . . .  	N PROC	04ED	MIS_TEXT	Length = 0016
+FINISH . . . . . . . . . . . . .  	N PROC	0173	MIS_TEXT	Length = 00E8
+FNK1 . . . . . . . . . . . . . .  	L NEAR	01BE	MIS_TEXT
+FNK2 . . . . . . . . . . . . . .  	L NEAR	01B8	MIS_TEXT
+FNK4 . . . . . . . . . . . . . .  	L NEAR	0257	MIS_TEXT
+FNKA1  . . . . . . . . . . . . .  	L NEAR	020A	MIS_TEXT
+FNKA2  . . . . . . . . . . . . .  	L NEAR	024F	MIS_TEXT
+FNKL1  . . . . . . . . . . . . .  	L NEAR	017C	MIS_TEXT
+FNKL2  . . . . . . . . . . . . .  	L NEAR	01CD	MIS_TEXT
+FNKL3  . . . . . . . . . . . . .  	L NEAR	0212	MIS_TEXT
+FREQU0 . . . . . . . . . . . . .  	L WORD	00B2	_DATA
+FREQU1 . . . . . . . . . . . . .  	L WORD	00B8	_DATA
+FREQUC . . . . . . . . . . . . .  	L WORD	00BE	_DATA
+
+GAME . . . . . . . . . . . . . .  	N PROC	003D	MIS_TEXT	Length = 0068
+GAMEOVER . . . . . . . . . . . .  	L NEAR	00A4	MIS_TEXT
+get  . . . . . . . . . . . . . .  	L NEAR	0000		External
+GETBUTTONS . . . . . . . . . . .  	N PROC	0C84	MIS_TEXT	Length = 001D
+GNEXT  . . . . . . . . . . . . .  	L NEAR	007F	MIS_TEXT
+GROUNDCOLOR  . . . . . . . . . .  	L WORD	0090	_DATA
+GSK1 . . . . . . . . . . . . . .  	L NEAR	00A2	MIS_TEXT
+
+INIT . . . . . . . . . . . . . .  	N PROC	0009	MIS_TEXT	Length = 0030
+INPUT  . . . . . . . . . . . . .  	N PROC	02D3	MIS_TEXT	Length = 0088
+inttodec . . . . . . . . . . . .  	L NEAR	0000		External
+
+KIND . . . . . . . . . . . . . .  	NUMBER	0004	
+
+LASTDEC  . . . . . . . . . . . .  	NUMBER	001C	
+LASTTASK . . . . . . . . . . . .  	L WORD	0CF4	_DATA
+LASTX  . . . . . . . . . . . . .  	NUMBER	0018	
+LASTY  . . . . . . . . . . . . .  	NUMBER	001A	
+line . . . . . . . . . . . . . .  	L NEAR	0000		External
+load8x8  . . . . . . . . . . . .  	L NEAR	0000		External
+
+MAIN . . . . . . . . . . . . . .  	N PROC	0000	MIS_TEXT	Length = 0009
+MAXRADIUS  . . . . . . . . . . .  	NUMBER	001C	
+MAXTASK  . . . . . . . . . . . .  	L WORD	0006	_DATA
+MAXWAVE  . . . . . . . . . . . .  	L WORD	0008	_DATA
+MAXX . . . . . . . . . . . . . .  	NUMBER	027F	
+MAXY . . . . . . . . . . . . . .  	NUMBER	01DF	
+MCOLOR1  . . . . . . . . . . . .  	L WORD	008C	_DATA
+MCOLOR2  . . . . . . . . . . . .  	L WORD	008E	_DATA
+MDWAIT . . . . . . . . . . . . .  	L WORD	00A8	_DATA
+MISS1SPEED . . . . . . . . . . .  	L WORD	009E	_DATA
+MISSILE  . . . . . . . . . . . .  	L BYTE	04B2	_DATA
+MISSILEOFF . . . . . . . . . . .  	N PROC	04C3	MIS_TEXT	Length = 002A
+MISSILEON  . . . . . . . . . . .  	N PROC	0499	MIS_TEXT	Length = 002A
+MISSILEX . . . . . . . . . . . .  	L WORD	004C	_DATA
+MISSILEY . . . . . . . . . . . .  	L WORD	006A	_DATA
+MISSLEFT . . . . . . . . . . . .  	L WORD	0CF8	_DATA
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Symbols-4
+
+
+MISSRIGHT  . . . . . . . . . . .  	L WORD	0CFA	_DATA
+MODE . . . . . . . . . . . . . .  	NUMBER	000C	
+MOTDONE  . . . . . . . . . . . .  	L NEAR	0C83	MIS_TEXT
+MOTHAND  . . . . . . . . . . . .  	N PROC	0C33	MIS_TEXT	Length = 0051
+MOTSK1 . . . . . . . . . . . . .  	L NEAR	0C5A	MIS_TEXT
+MOTSK2 . . . . . . . . . . . . .  	L NEAR	0C64	MIS_TEXT
+MOTSK3 . . . . . . . . . . . . .  	L NEAR	0C6E	MIS_TEXT
+MOTSK4 . . . . . . . . . . . . .  	L NEAR	0C78	MIS_TEXT
+MOUSEOFF . . . . . . . . . . . .  	N PROC	0CCB	MIS_TEXT	Length = 002A
+MOUSEON  . . . . . . . . . . . .  	N PROC	0CA1	MIS_TEXT	Length = 002A
+MOUSEX . . . . . . . . . . . . .  	L WORD	0CEC	_DATA
+MOUSEY . . . . . . . . . . . . .  	L WORD	0CEE	_DATA
+MSDONE . . . . . . . . . . . . .  	L NEAR	035A	MIS_TEXT
+MSDROP . . . . . . . . . . . . .  	L NEAR	02E2	MIS_TEXT
+MSSK1  . . . . . . . . . . . . .  	L NEAR	030E	MIS_TEXT
+MSSK2  . . . . . . . . . . . . .  	L NEAR	033A	MIS_TEXT
+
+NCLOOP . . . . . . . . . . . . .  	L NEAR	077F	MIS_TEXT
+NEXTBONUS  . . . . . . . . . . .  	L WORD	0CFC	_DATA
+NEXTNOTE . . . . . . . . . . . .  	NUMBER	0014	
+NOTEPOINTER  . . . . . . . . . .  	NUMBER	0012	
+NUKECITY . . . . . . . . . . . .  	N PROC	0762	MIS_TEXT	Length = 0060
+NUKET  . . . . . . . . . . . . .  	L WORD	002A	_DATA
+NUKEX  . . . . . . . . . . . . .  	L WORD	001E	_DATA
+NUKEY  . . . . . . . . . . . . .  	L WORD	0024	_DATA
+
+oline  . . . . . . . . . . . . .  	L NEAR	0000		External
+
+PALLTABLE  . . . . . . . . . . .  	L BYTE	034D	_DATA
+plot . . . . . . . . . . . . . .  	L NEAR	0000		External
+POINTS1  . . . . . . . . . . . .  	L WORD	00AA	_DATA
+POINTS2  . . . . . . . . . . . .  	L WORD	00AC	_DATA
+POINTS3  . . . . . . . . . . . .  	L WORD	00AE	_DATA
+POINTS4  . . . . . . . . . . . .  	L WORD	00B0	_DATA
+PREPPALL . . . . . . . . . . . .  	L BYTE	033C	_DATA
+PREPPALLETTE . . . . . . . . . .  	N PROC	05F3	MIS_TEXT	Length = 000F
+
+RADIUS . . . . . . . . . . . . .  	NUMBER	000C	
+random . . . . . . . . . . . . .  	L NEAR	0000		External
+
+SCCD . . . . . . . . . . . . . .  	L NEAR	0705	MIS_TEXT
+SCORE  . . . . . . . . . . . . .  	L WORD	0D02	_DATA
+SCORESTRING  . . . . . . . . . .  	L BYTE	0D04	_DATA
+SCSK1  . . . . . . . . . . . . .  	L NEAR	074D	MIS_TEXT
+SCSK2  . . . . . . . . . . . . .  	L NEAR	0755	MIS_TEXT
+seedrand . . . . . . . . . . . .  	L NEAR	0000		External
+SETPALLETTE  . . . . . . . . . .  	N PROC	0602	MIS_TEXT	Length = 003C
+SETUP  . . . . . . . . . . . . .  	N PROC	00C1	MIS_TEXT	Length = 0072
+SKIP . . . . . . . . . . . . . .  	NUMBER	0002	
+SMUDONE  . . . . . . . . . . . .  	L NEAR	06F9	MIS_TEXT
+SMUREV . . . . . . . . . . . . .  	L NEAR	06F1	MIS_TEXT
+SNDDONE  . . . . . . . . . . . .  	L NEAR	0C2F	MIS_TEXT
+SOUND  . . . . . . . . . . . . .  	N PROC	0C0C	MIS_TEXT	Length = 0027
+SPLITDECK  . . . . . . . . . . .  	L WORD	001A	_DATA
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Symbols-5
+
+
+SPLLP2 . . . . . . . . . . . . .  	L NEAR	0623	MIS_TEXT
+SSND1  . . . . . . . . . . . . .  	L NEAR	08F0	MIS_TEXT
+STARTCLOUD . . . . . . . . . . .  	N PROC	06FA	MIS_TEXT	Length = 0068
+STARTSOUND . . . . . . . . . . .  	N PROC	08E6	MIS_TEXT	Length = 0051
+STARTTRACER  . . . . . . . . . .  	N PROC	07C2	MIS_TEXT	Length = 0071
+STARTUPMISS  . . . . . . . . . .  	N PROC	0666	MIS_TEXT	Length = 0094
+STARTWARHEAD . . . . . . . . . .  	N PROC	0833	MIS_TEXT	Length = 00B3
+string . . . . . . . . . . . . .  	L NEAR	0000		External
+STUDONE  . . . . . . . . . . . .  	L NEAR	0832	MIS_TEXT
+STUREV . . . . . . . . . . . . .  	L NEAR	082A	MIS_TEXT
+SUMCD  . . . . . . . . . . . . .  	L NEAR	0670	MIS_TEXT
+SWCD . . . . . . . . . . . . . .  	L NEAR	083D	MIS_TEXT
+SWHDONE  . . . . . . . . . . . .  	L NEAR	08E5	MIS_TEXT
+SWHREV . . . . . . . . . . . . .  	L NEAR	08DD	MIS_TEXT
+SWHSK1 . . . . . . . . . . . . .  	L NEAR	0874	MIS_TEXT
+SWHSK2 . . . . . . . . . . . . .  	L NEAR	088D	MIS_TEXT
+
+T1LP1  . . . . . . . . . . . . .  	L NEAR	052D	MIS_TEXT
+T1LP2  . . . . . . . . . . . . .  	L NEAR	0524	MIS_TEXT
+T2PT1  . . . . . . . . . . . . .  	L NEAR	0568	MIS_TEXT
+TARGET . . . . . . . . . . . . .  	NUMBER	001E	
+TARGETX  . . . . . . . . . . . .  	L WORD	003C	_DATA
+TERMFLAG . . . . . . . . . . . .  	L WORD	0CF0	_DATA
+TIME . . . . . . . . . . . . . .  	NUMBER	0000	
+TIMELOOP . . . . . . . . . . . .  	N PROC	0133	MIS_TEXT	Length = 0040
+timer  . . . . . . . . . . . . .  	V WORD	0000		External
+timeroff . . . . . . . . . . . .  	L NEAR	0000		External
+timeron  . . . . . . . . . . . .  	L NEAR	0000		External
+TLDONE . . . . . . . . . . . . .  	L NEAR	0172	MIS_TEXT
+TLEXEC . . . . . . . . . . . . .  	L NEAR	0146	MIS_TEXT
+TLINC  . . . . . . . . . . . . .  	L NEAR	016C	MIS_TEXT
+TLNOTUP  . . . . . . . . . . . .  	L NEAR	0154	MIS_TEXT
+TNL1 . . . . . . . . . . . . . .  	L NEAR	0588	MIS_TEXT
+TONE . . . . . . . . . . . . . .  	N PROC	056F	MIS_TEXT	Length = 002D
+TRACER . . . . . . . . . . . . .  	N PROC	09F8	MIS_TEXT	Length = 006E
+TRACEWAIT  . . . . . . . . . . .  	L WORD	00A2	_DATA
+TRDONE . . . . . . . . . . . . .  	L NEAR	0A47	MIS_TEXT
+TREND  . . . . . . . . . . . . .  	L NEAR	0A62	MIS_TEXT
+TRHORIZ  . . . . . . . . . . . .  	L NEAR	0A2F	MIS_TEXT
+TRSK1  . . . . . . . . . . . . .  	L NEAR	0A11	MIS_TEXT
+TRSKA  . . . . . . . . . . . . .  	L NEAR	0A5A	MIS_TEXT
+TRSKB  . . . . . . . . . . . . .  	L NEAR	0A5B	MIS_TEXT
+TRVERT . . . . . . . . . . . . .  	L NEAR	0A18	MIS_TEXT
+TS . . . . . . . . . . . . . . .  	L WORD	0D1E	_DATA	Length = 0040
+TUNE1  . . . . . . . . . . . . .  	N PROC	0521	MIS_TEXT	Length = 001A
+TUNE2  . . . . . . . . . . . . .  	N PROC	053B	MIS_TEXT	Length = 0034
+
+UMDONE . . . . . . . . . . . . .  	L NEAR	09D3	MIS_TEXT
+UMEND  . . . . . . . . . . . . .  	L NEAR	09EE	MIS_TEXT
+UMHORIZ  . . . . . . . . . . . .  	L NEAR	09B4	MIS_TEXT
+UMSKA  . . . . . . . . . . . . .  	L NEAR	09E6	MIS_TEXT
+UMSKB  . . . . . . . . . . . . .  	L NEAR	09E7	MIS_TEXT
+UMVERT . . . . . . . . . . . . .  	L NEAR	0996	MIS_TEXT
+UPMISSILE  . . . . . . . . . . .  	N PROC	0980	MIS_TEXT	Length = 0078
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Symbols-6
+
+
+UPSCORE  . . . . . . . . . . . .  	N PROC	03A3	MIS_TEXT	Length = 002B
+UTILPALL . . . . . . . . . . . .  	L BYTE	0CBC	_DATA	Length = 0030
+
+VALUE  . . . . . . . . . . . . .  	NUMBER	000E	
+VIDSEG . . . . . . . . . . . . .  	L WORD	0000	_DATA
+
+WARCLOUDCOLOR  . . . . . . . . .  	L WORD	0098	_DATA
+WARHEAD  . . . . . . . . . . . .  	N PROC	0A66	MIS_TEXT	Length = 0137
+WARHEADCOLOR1  . . . . . . . . .  	L WORD	0094	_DATA
+WARHEADCOLOR2  . . . . . . . . .  	L WORD	0096	_DATA
+WARHEADSPEED . . . . . . . . . .  	L WORD	0D00	_DATA
+WARTRACE . . . . . . . . . . . .  	N PROC	0B9D	MIS_TEXT	Length = 006F
+WARTRACESPEED  . . . . . . . . .  	L WORD	00A0	_DATA
+WAVE . . . . . . . . . . . . . .  	N PROC	00A5	MIS_TEXT	Length = 000A
+WAVE0  . . . . . . . . . . . . .  	L WORD	00C4	_DATA
+WAVE1  . . . . . . . . . . . . .  	L WORD	00D8	_DATA
+WAVE10 . . . . . . . . . . . . .  	L WORD	01F0	_DATA
+WAVE11 . . . . . . . . . . . . .  	L WORD	0214	_DATA
+WAVE12 . . . . . . . . . . . . .  	L WORD	0234	_DATA
+WAVE13 . . . . . . . . . . . . .  	L WORD	0250	_DATA
+WAVE14 . . . . . . . . . . . . .  	L WORD	0270	_DATA
+WAVE15 . . . . . . . . . . . . .  	L WORD	0294	_DATA
+WAVE16 . . . . . . . . . . . . .  	L WORD	02B8	_DATA
+WAVE17 . . . . . . . . . . . . .  	L WORD	02DC	_DATA
+WAVE18 . . . . . . . . . . . . .  	L WORD	02FC	_DATA
+WAVE19 . . . . . . . . . . . . .  	L WORD	031C	_DATA
+WAVE2  . . . . . . . . . . . . .  	L WORD	00EC	_DATA
+WAVE3  . . . . . . . . . . . . .  	L WORD	0108	_DATA
+WAVE4  . . . . . . . . . . . . .  	L WORD	012C	_DATA
+WAVE5  . . . . . . . . . . . . .  	L WORD	014C	_DATA
+WAVE6  . . . . . . . . . . . . .  	L WORD	016C	_DATA
+WAVE7  . . . . . . . . . . . . .  	L WORD	018C	_DATA
+WAVE8  . . . . . . . . . . . . .  	L WORD	01AC	_DATA
+WAVE9  . . . . . . . . . . . . .  	L WORD	01CC	_DATA
+WAVEDATA . . . . . . . . . . . .  	N PROC	0393	MIS_TEXT	Length = 0010
+WAVEHANDLE . . . . . . . . . . .  	N PROC	035B	MIS_TEXT	Length = 0038
+WAVENUMBER . . . . . . . . . . .  	L WORD	0D1A	_DATA
+WAVEPOINTER  . . . . . . . . . .  	L WORD	0D1C	_DATA
+WHC1 . . . . . . . . . . . . . .  	L NEAR	0B83	MIS_TEXT
+WHC2 . . . . . . . . . . . . . .  	L NEAR	0B92	MIS_TEXT
+WHCITY . . . . . . . . . . . . .  	L NEAR	0B80	MIS_TEXT
+WHDONE . . . . . . . . . . . . .  	L NEAR	0B7F	MIS_TEXT
+WHHORIZ  . . . . . . . . . . . .  	L NEAR	0B60	MIS_TEXT
+WHSK1  . . . . . . . . . . . . .  	L NEAR	0B56	MIS_TEXT
+WHSK10 . . . . . . . . . . . . .  	L NEAR	0B20	MIS_TEXT
+WHSK2  . . . . . . . . . . . . .  	L NEAR	0ACD	MIS_TEXT
+WHSK3  . . . . . . . . . . . . .  	L NEAR	0ACD	MIS_TEXT
+WHSK4  . . . . . . . . . . . . .  	L NEAR	0A8F	MIS_TEXT
+WHSK5  . . . . . . . . . . . . .  	L NEAR	0A9D	MIS_TEXT
+WHSK7  . . . . . . . . . . . . .  	L NEAR	0AFD	MIS_TEXT
+WHSK8  . . . . . . . . . . . . .  	L NEAR	0B09	MIS_TEXT
+WHSK9  . . . . . . . . . . . . .  	L NEAR	0B12	MIS_TEXT
+WHSKA  . . . . . . . . . . . . .  	L NEAR	0AB4	MIS_TEXT
+WHSKB  . . . . . . . . . . . . .  	L NEAR	0AC8	MIS_TEXT
+Microsoft (R) Macro Assembler Version 5.10                  9/2/92 17:59:27
+
+Missile Command                                             Symbols-7
+
+
+WHVERT . . . . . . . . . . . . .  	L NEAR	0A7F	MIS_TEXT
+WTDONE . . . . . . . . . . . . .  	L NEAR	0BED	MIS_TEXT
+WTEND  . . . . . . . . . . . . .  	L NEAR	0C08	MIS_TEXT
+WTHORIZ  . . . . . . . . . . . .  	L NEAR	0BD5	MIS_TEXT
+WTSK1  . . . . . . . . . . . . .  	L NEAR	0BB7	MIS_TEXT
+WTSKA  . . . . . . . . . . . . .  	L NEAR	0C00	MIS_TEXT
+WTSKB  . . . . . . . . . . . . .  	L NEAR	0C01	MIS_TEXT
+WTVERT . . . . . . . . . . . . .  	L NEAR	0BBE	MIS_TEXT
+WVLP1  . . . . . . . . . . . . .  	L NEAR	0365	MIS_TEXT
+WVSK1  . . . . . . . . . . . . .  	L NEAR	0392	MIS_TEXT
+WVSK2  . . . . . . . . . . . . .  	L NEAR	0385	MIS_TEXT
+
+XLAUNCH1 . . . . . . . . . . . .  	L WORD	0012	_DATA
+XLAUNCH2 . . . . . . . . . . . .  	L WORD	0014	_DATA
+xline  . . . . . . . . . . . . .  	L NEAR	0000		External
+XPOS . . . . . . . . . . . . . .  	NUMBER	0008	
+
+YLAUNCH  . . . . . . . . . . . .  	L WORD	0016	_DATA
+YPOS . . . . . . . . . . . . . .  	NUMBER	000A	
+
+@CODE  . . . . . . . . . . . . .  	TEXT  mis_TEXT		
+@CODESIZE  . . . . . . . . . . .  	TEXT  1		
+@CPU . . . . . . . . . . . . . .  	TEXT  1287		
+@DATASIZE  . . . . . . . . . . .  	TEXT  1		
+@FILENAME  . . . . . . . . . . .  	TEXT  mis		
+@VERSION . . . . . . . . . . . .  	TEXT  510		
+
+
+   1768 Source  Lines
+   1768 Total   Lines
+    329 Symbols
+
+  46342 + 356191 Bytes symbol space free
+
+      0 Warning Errors
+      0 Severe  Errors

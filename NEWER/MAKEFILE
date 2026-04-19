@@ -1,0 +1,12 @@
+rand.obj: rand.asm
+        ta rand
+
+bigmode.obj: bigmode.asm
+        ta bigmode
+
+big.obj: big.asm
+        ta big
+
+big.exe: big.obj bigmode.obj rand.obj
+        tl big+bigmode+rand
+
