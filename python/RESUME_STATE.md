@@ -1292,7 +1292,7 @@ Each display object has a lifetime of 7 frames (init at 33, destroyed at 39).
 - Trail sprites live 7 ticks each, creating visible bullet trail
 - Frame 24: shot complete, destroyed
 - Wall collision: immediate destruction
-- Rapid fire: cooldown of 5 ticks allows quick successive shots
+- Rapid fire: cooldown of 8 ticks (matches original [0x23C7] tick counter), no shot limit
 
 **Key addresses:**
 - JET_FIRE_FRAME: DS:0x23D4 (fire animation counter)

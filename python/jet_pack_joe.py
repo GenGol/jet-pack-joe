@@ -382,12 +382,11 @@ class Player:
         self.shots = [s for s in self.shots if s.alive]
 
     def fire(self):
-        if self.fire_cooldown <= 0 and len(self.shots) < 3:
-            # Gun tip position from Joe's sprite geometry
+        if self.fire_cooldown <= 0:
             gun_x = self.x + (13 if self.direction > 0 else -11)
             gun_y = self.y + 1
             self.shots.append(Shot(gun_x, gun_y, self.direction))
-            self.fire_cooldown = 5  # allow rapid fire like original
+            self.fire_cooldown = 8  # matches original [0x23C7] tick counter
 
     def draw(self, surface, sprites):
         sp = self._get_sprite(sprites)
