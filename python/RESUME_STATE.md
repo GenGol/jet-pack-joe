@@ -1283,13 +1283,16 @@ Each display object has a lifetime of 7 frames (init at 33, destroyed at 39).
 - At lifetime 37: frees the secondary sprite
 - At lifetime 39: frees primary sprite and deactivates
 
-**Our simplified implementation:**
-- Single moving bullet using sprites 23 (right) / 24 (left)
-- Gun position derived from Joe's sprite geometry:
-  - Right: gun_x = Joe.x + 13 (sprite 1 x_end=+18, bullet x_off=-4, tip at +5)
-  - Left: gun_x = Joe.x - 11 (sprite 0 x_off=-16, bullet x_off=-5, tip at -6)
-  - gun_y = Joe.y + 1 (gun barrel at body center)
-- Bullet moves at SHOT_SPEED per frame, destroyed on wall collision or timeout
+**Our implementation (matching original mechanism):**
+- Fire creates a Shot with tick counter (8) and fire_frame (0)
+- Each tick: position advances 2px, tick counter decrements
+- At tick 0: reset to 7, increment fire_frame, spawn trail sprite
+  - Frames 0-15: small projectile sprite (23 right / 24 left)
+  - Frames 16-23: explosion sprites 42-49 (growing muzzle flash)
+- Trail sprites live 7 ticks each, creating visible bullet trail
+- Frame 24: shot complete, destroyed
+- Wall collision: immediate destruction
+- Rapid fire: cooldown of 5 ticks allows quick successive shots
 
 **Key addresses:**
 - JET_FIRE_FRAME: DS:0x23D4 (fire animation counter)

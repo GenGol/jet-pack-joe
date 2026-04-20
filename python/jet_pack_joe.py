@@ -219,25 +219,54 @@ def joe_hits_bg(cbm, ox, oy):
 
 
 class Shot:
-    def __init__(self, x, y, dx):
-        self.x, self.y, self.dx = float(x), float(y), dx
-        self.life = SHOT_LIFE
+    """Projectile matching original GAME.EXE fire system (0x0F05-0x0FE0).
+    Uses a tick counter that counts down 8→0 per frame, advancing position each tick.
+    Every 7-8 ticks, fire_frame increments and a new visual trail sprite is spawned."""
+    def __init__(self, x, y, direction):
+        self.x, self.y = float(x), float(y)
+        self.direction = direction
+        self.fire_frame = 0
+        self.tick = 8  # counts down per update, new frame at 0
+        self.trail = []  # list of (x, y, sprite_idx, life)
         self.alive = True
 
     def update(self, cbm):
-        self.x += self.dx
-        self.life -= 1
-        if self.life <= 0 or self.x < 0 or self.x >= SCREEN_W:
+        if not self.alive:
+            return
+        # Advance projectile position each tick
+        self.x += self.direction * 2
+        self.tick -= 1
+        # Check wall collision
+        ix, iy = int(self.x) // 2, int(self.y) // 2
+        if ix < 0 or ix >= HALF_W or self.x < 0 or self.x >= SCREEN_W:
             self.alive = False
             return
-        ix, iy = int(self.x) // 2, int(self.y) // 2
         if 0 <= ix < HALF_W and 0 <= iy < HALF_H and cbm[iy * HALF_W + ix]:
             self.alive = False
+            return
+        if self.tick <= 0:
+            self.tick = 7
+            # Spawn trail sprite at current position
+            if self.fire_frame < 8:
+                sp_idx = 23 if self.direction > 0 else 24
+            elif self.fire_frame < 16:
+                sp_idx = 23 if self.direction > 0 else 24
+            else:
+                sp_idx = min(49, 42 + (self.fire_frame - 16) // 2)
+            self.trail.append([int(self.x), int(self.y), sp_idx, 7])
+            self.fire_frame += 1
+            if self.fire_frame >= 24:
+                self.alive = False
+        # Age trail sprites
+        for t in self.trail:
+            t[3] -= 1
+        self.trail = [t for t in self.trail if t[3] > 0]
 
     def draw(self, surface, sprites):
-        idx = 23 if self.dx > 0 else 24
-        sp = sprites[idx]
-        surface.blit(sp["surf"], (int(self.x) + sp["x_off"], int(self.y) + sp["y_off"]))
+        for tx, ty, sp_idx, life in self.trail:
+            if sp_idx < len(sprites):
+                sp = sprites[sp_idx]
+                surface.blit(sp["surf"], (tx + sp["x_off"], ty + sp["y_off"]))
 
 
 class Player:
@@ -354,13 +383,11 @@ class Player:
 
     def fire(self):
         if self.fire_cooldown <= 0 and len(self.shots) < 3:
-            # Gun tip position from Joe's sprite geometry:
-            # Right (dir=1): gun extends to x_end=+18, barrel at ~y=+1
-            # Left (dir=-1): gun extends to x_off=-16, barrel at ~y=+1
+            # Gun tip position from Joe's sprite geometry
             gun_x = self.x + (13 if self.direction > 0 else -11)
             gun_y = self.y + 1
-            self.shots.append(Shot(gun_x, gun_y, self.direction * SHOT_SPEED))
-            self.fire_cooldown = 10
+            self.shots.append(Shot(gun_x, gun_y, self.direction))
+            self.fire_cooldown = 5  # allow rapid fire like original
 
     def draw(self, surface, sprites):
         sp = self._get_sprite(sprites)
