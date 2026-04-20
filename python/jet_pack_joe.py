@@ -218,55 +218,62 @@ def joe_hits_bg(cbm, ox, oy):
     return False
 
 
+class Explosion:
+    """Wall-hit explosion from original GAME.EXE handler 0x1103.
+    Static position, cycles sprites 33→34→35→36→37→38.
+    Original: [DI+8]=0x47(71) tick interval, game loop consumes ~20 ticks/frame,
+    so each sprite shows for ~71/20 ≈ 3.5 render frames."""
+    FRAME_HOLD = 4  # ~71/20 ticks per render frame
+
+    def __init__(self, x, y):
+        self.x, self.y = int(x), int(y)
+        self.sprite_idx = 33
+        self.timer = self.FRAME_HOLD
+        self.alive = True
+
+    def update(self):
+        self.timer -= 1
+        if self.timer <= 0:
+            self.timer = self.FRAME_HOLD
+            self.sprite_idx += 1
+            if self.sprite_idx > 38:
+                self.alive = False
+
+    def draw(self, surface, sprites):
+        if self.alive and self.sprite_idx < len(sprites):
+            sp = sprites[self.sprite_idx]
+            surface.blit(sp["surf"], (self.x + sp["x_off"], self.y + sp["y_off"]))
+
+
 class Shot:
-    """Projectile matching original GAME.EXE fire system (0x0F05-0x0FE0).
-    Uses a tick counter that counts down 8→0 per frame, advancing position each tick.
-    Every 7-8 ticks, fire_frame increments and a new visual trail sprite is spawned."""
-    def __init__(self, x, y, direction):
+    """Moving projectile matching original GAME.EXE handler 0xFE3.
+    Moves ±2px every frame. On wall hit: spawn Explosion, die immediately."""
+    def __init__(self, x, y, direction, explosions):
         self.x, self.y = float(x), float(y)
         self.direction = direction
-        self.fire_frame = 0
-        self.tick = 8  # counts down per update, new frame at 0
-        self.trail = []  # list of (x, y, sprite_idx, life)
+        self.sprite_idx = 23 if direction > 0 else 24
         self.alive = True
-        self.hit_wall = False
+        self.explosions = explosions  # shared list to append explosions to
 
     def update(self, cbm):
         if not self.alive:
             return
-        # Advance projectile position each tick (unless hit wall)
-        if not self.hit_wall:
-            self.x += self.direction * 2
-            # Check wall collision
-            ix, iy = int(self.x) // 2, int(self.y) // 2
-            if ix < 0 or ix >= HALF_W or self.x < 0 or self.x >= SCREEN_W:
-                self.x -= self.direction * 2  # back up to visible position
-                self.hit_wall = True
-            elif 0 <= ix < HALF_W and 0 <= iy < HALF_H and cbm[iy * HALF_W + ix]:
-                self.x -= self.direction * 2  # back up outside wall
-                self.hit_wall = True
-        self.tick -= 1
-        if self.tick <= 0:
-            self.tick = 2 if self.hit_wall else 7
-            # Spawn trail sprite at current position
-            if self.fire_frame < 16:
-                sp_idx = 23 if self.direction > 0 else 24
-            else:
-                sp_idx = min(45, 42 + (self.fire_frame - 16) // 2)
-            self.trail.append([int(self.x), int(self.y), sp_idx, 7])
-            self.fire_frame += 1
-            if self.fire_frame >= 24:
-                self.alive = False
-        # Age trail sprites
-        for t in self.trail:
-            t[3] -= 1
-        self.trail = [t for t in self.trail if t[3] > 0]
+        self.x += self.direction * 2
+        # Check screen bounds
+        if self.x < 0 or self.x >= SCREEN_W:
+            self.alive = False
+            return
+        # Check wall collision using half-res bitmap (matching SH00.DAT shape 1: 4×2)
+        hx, hy = int(self.x) // 2, int(self.y) // 2
+        if 0 <= hx < HALF_W and 0 <= hy < HALF_H and cbm[hy * HALF_W + hx]:
+            self.explosions.append(Explosion(self.x, self.y))
+            self.alive = False
+            return
 
     def draw(self, surface, sprites):
-        for tx, ty, sp_idx, life in self.trail:
-            if sp_idx < len(sprites):
-                sp = sprites[sp_idx]
-                surface.blit(sp["surf"], (tx + sp["x_off"], ty + sp["y_off"]))
+        if self.alive and self.sprite_idx < len(sprites):
+            sp = sprites[self.sprite_idx]
+            surface.blit(sp["surf"], (int(self.x) + sp["x_off"], int(self.y) + sp["y_off"]))
 
 
 class Player:
@@ -278,6 +285,7 @@ class Player:
         self.time = TIME_LIMIT
         self.lives = 3
         self.shots = []
+        self.explosions = []
         self.fire_cooldown = 0
         self.anim_frame = 0
         self.anim_timer = 0
@@ -380,13 +388,16 @@ class Player:
         for s in self.shots:
             s.update(cbm)
         self.shots = [s for s in self.shots if s.alive]
+        for e in self.explosions:
+            e.update()
+        self.explosions[:] = [e for e in self.explosions if e.alive]
 
     def fire(self):
         if self.fire_cooldown <= 0:
-            gun_x = self.x + (13 if self.direction > 0 else -11)
-            gun_y = self.y + 1
-            self.shots.append(Shot(gun_x, gun_y, self.direction))
-            self.fire_cooldown = 8  # matches original [0x23C7] tick counter
+            gun_x = self.x + (12 if self.direction > 0 else -12)
+            gun_y = self.y + 2
+            self.shots.append(Shot(gun_x, gun_y, self.direction, self.explosions))
+            self.fire_cooldown = 8
 
     def draw(self, surface, sprites):
         sp = self._get_sprite(sprites)
@@ -406,6 +417,8 @@ class Player:
                 surface.blit(fl["surf"], (int(self.x) + fl["x_off"], int(self.y) + fl["y_off"]))
         for s in self.shots:
             s.draw(surface, sprites)
+        for e in self.explosions:
+            e.draw(surface, sprites)
 
 
 class JetPackJoe:
@@ -930,6 +943,8 @@ class JetPackJoe:
         self.current_room = new_room
         self.player.x = cx + 160
         self.player.y = dx + 96
+        self.player.shots.clear()
+        self.player.explosions.clear()
 
     def set_level(self, level):
         if 0 <= level < 3:
@@ -1010,6 +1025,10 @@ class JetPackJoe:
         if not self.game_over:
             self.player.draw(self.screen, self.sprites)
         self.render_foreground(self.current_room, self.screen)
+        # Draw explosions on top of everything (they occur at wall edges)
+        if not self.game_over:
+            for e in self.player.explosions:
+                e.draw(self.screen, self.sprites)
 
         bar_y = SCREEN_H
         pygame.draw.rect(self.screen, (0, 0, 0), (0, bar_y, SCREEN_W, STATUS_H))

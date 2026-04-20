@@ -1,5 +1,5 @@
 # Jet Pack Joe — Reverse Engineering State Document
-# Last updated: 2026-04-16 (session 2)
+# Last updated: 2026-04-20 (session 4)
 # Purpose: Resume point for continuing the Python recreation
 
 ## PROJECT LOCATION
@@ -917,9 +917,18 @@ Located in debug section starting around 0x10A8E:
      - Disappear uses tiles 213-219, 234-239 (shrink, flash, dissolve)
      - Frame 12: captive sprite removed; Frame 16: all tiles cleared
    - **Other objects**: sentry (14), glow_ball (13) — basic sprite rendering only
+   - **Projectile system — WORKING ✓ (session 4):**
+     - Moving projectile (Shot class): sprite 23/24, moves ±2px/frame
+     - Wall-hit explosion (Explosion class): sprites 33→38, FRAME_HOLD=4
+     - No pause on wall hit — projectile dies, explosion spawns at hit position
+     - Explosions drawn after foreground layer (visible on top of walls)
+     - Shared explosions list uses slice assignment to preserve Shot references
+     - Fire cooldown: 8 frames between shots
+     - Gun offset: ±12 X, +2 Y from player position
    - **Not yet implemented**: horiz_field (9), generators (11/12/20),
      teleporter (19), sensor_switch (18), plates (15/16), toggle_switch (17)
-   - **Not yet implemented gameplay**: field killing Joe, enemy AI, door blocking
+   - **Not yet implemented gameplay**: field killing Joe, enemy AI, door blocking,
+     muzzle flash animation (cosmetic, low priority)
 
 ## SESSION 3 FIXES (2026-04-19)
 
@@ -1248,69 +1257,315 @@ Fix: at frame 17, clear the collision bitmap at the cage wall positions
 - Level trailer: room 68 data (offsets[68] + 8 + 4 header words)
 - Room read pointer setup: 0x04F8 (sets DS:0x3061/0x3063 for READ_WORD)
 
-### Fix 13: Projectile sprite and position
+### Fix 13: Projectile and wall-hit explosion (CORRECTED — session 4, 2026-04-20)
 
-**Original game projectile system (from GAME.EXE 0x0F40-0x0FE0):**
+**Previous implementation was WRONG.** The old code combined the muzzle flash animation
+and the moving projectile into a single Shot class, used the wrong sprites for wall hits
+(42-45 zap instead of 33-38 glow), and paused on wall collision. All of this was incorrect.
 
-The fire system uses `JET_FIRE_FRAME` at DS:0x23D4 as an animation counter.
-When fire is pressed, this counter increments each frame. Different ranges
-trigger different visual effects:
+**Fully reverse-engineered from GAME.EXE — three independent systems:**
 
-- Frame 0-7: Small muzzle flash near gun (left direction)
-- Frame 8-15: Small muzzle flash (right direction), sprite = (frame/2) + 42
-- Frame ≥ 16: Large projectile at max distance
-- Frame = 17 (0x11): collision check against enemies
-- Frame = 50 (0x32): sets completion flag at DS:0x305E
+#### System 1: Moving Projectile (handler 0xFE3)
 
-The projectile is NOT a single moving object. The visual "movement" comes from
-spawning static display objects at progressively further positions each frame.
-Each display object has a lifetime of 7 frames (init at 33, destroyed at 39).
+Created when fire button is pressed. This is the arrow that flies across the screen.
 
-**Gun position tracking:**
-- Gun tip position stored at DS:0x23C1 (X) and DS:0x23C3 (Y) in centered coords
-- Updated incrementally by the player movement code with collision nudging
-- Three write paths: room entry (0x0C80), movement (0x0D60), direction change (0x0E35)
-- The fire handler reads these to spawn projectiles at the gun tip
+**Creation (at 0x0EAA-0x0EF5):**
+- Fire button check: `TEST [BP-2], 0x10`
+- Cooldown: `[0x3065] - [0x23CF] >= 0xC8` (200 counter ticks between shots)
+- Direction: `BL = [0x23CD]` (0=left, 1=right)
+- Gun position: `CX = [0x23C1] - 12 + direction*24`, `DX = [0x23C3] + 2`
+  - Left (dir=0): gun_x - 12
+  - Right (dir=1): gun_x + 12
+  - Y offset: +2
+- `BX = direction` (0 or 1 after SHR BX,4)
+- `CALL 0xFE3` with AX=0 (init)
 
-**Projectile handler (0x1103):**
-- Init (AX=0 at 0x1120): stores position, sets lifetime to 0x21 (33), sprite type 0x47 (71)
-- Update (AX=2 at 0x1192): calls SET_SPRITE_POSITION (0x039A), increments lifetime
-- At lifetime 39: FREE_SPRITE and deactivate
-- Position is FIXED — no per-frame movement
+**Init (AX=0 at 0x1005):**
+```
+[DI+0x0A] = CX (start X position)
+[DI+0x0C] = DX (start Y position)
+[DI+0x1C] = BL + 0x17 (sprite index: 23=left arrow, 24=right arrow)
+[DI+0x10] = BL*4 - 2 (movement delta: -2=left, +2=right)
+[DI+0x00] = 3 (active state)
+[DI+0x04] = [0x3065] (display set base — used for timing)
+[DI+0x08] = 0x0F (15 — tick interval for object update scheduling)
+[DI+0x06] = 0x0FE3 (self handler address)
+```
 
-**Second projectile handler (0x11BA):**
-- Similar to first but with additional sprite handle at [DI+0x14]
-- At lifetime 37: frees the secondary sprite
-- At lifetime 39: frees primary sprite and deactivates
+**Update (AX=2 at 0x1084):**
+```
+CX = [DI+0x0A] + [DI+0x10]    ; X += movement (±2 per update)
+[DI+0x0A] = CX                 ; store new X
+DX = [DI+0x0C]                 ; Y (unchanged)
+CALL 0x521 (ROOM_TRANSITION)   ; check if left the room
+  If room changed → deactivate (projectile disappears)
+CALL 0x43C (CHECK_COLLISION)   ; AX=1 (shape 1), BL=0 (any type)
+  If NO collision → SET_SPRITE_POSITION, continue
+  If collision:
+    If [0x3175]==0 (solid wall):
+      CALL 0x1103 with AX=0    ; spawn explosion at (CX, DX)
+      FREE_SPRITE, deactivate  ; projectile dies IMMEDIATELY
+    Else: FREE_SPRITE, deactivate
+```
 
-**Our implementation (matching original mechanism):**
-- Fire creates a Shot with tick counter (8) and fire_frame (0)
-- Each tick: position advances 2px, tick counter decrements
-- At tick 0: reset to 7 (or 2 if wall hit), increment fire_frame, spawn trail sprite
-  - Frames 0-15: small projectile sprite (23 right / 24 left)
-  - Frames 16-23: electric zap sprites 42-45 (wall hit explosion)
-- Trail sprites live 7 ticks each, creating visible bullet trail
-- Frame 24: shot complete, destroyed
-- Wall collision: position backs up outside wall, stops advancing, frames continue naturally
-  - Frame advancement speeds up (tick=2) so explosion plays quickly
-- Rapid fire: cooldown of 8 ticks (matches original [0x23C7] tick counter), no shot limit
+**Key behavior:**
+- Moves ±2 pixels per object update (NOT per render frame — see timing below)
+- `[DI+8] = 0x0F (15)` → updates every 15 counter ticks
+- At ~1165 Hz counter rate, 15 ticks ≈ every render frame (20 ticks/frame)
+- So effectively moves ~2px per render frame
+- On wall hit: spawns ONE explosion, dies immediately — **NO PAUSE**
+- On room exit: just dies, no explosion
+- Collision shape: SH00.DAT entry 1 (4×2 half-res = 8×4 full-res rectangle)
 
-**Known issues (to revisit):**
-- Explosion sprites (42-45) may not perfectly match the original visual
-- The original game uses display set (DS00.DAT) entries for trail objects, not SP00.DAT sprites
-  - Trail object handler 0x1103 sets [DI+8]=0x47 (71) = display set entry, not sprite index
-  - The exact visual from DS00.DAT has not been extracted
-- Wall hit timing may still differ from original (original runs at different tick rate)
-- Joe's firing animation (cycling through frames 0-7 via 0x039A) not implemented
+#### System 2: Wall-Hit Explosion (handler 0x1103)
 
-**Key addresses:**
-- JET_FIRE_FRAME: DS:0x23D4 (fire animation counter)
-- Gun tip X: DS:0x23C1 (centered coords, updated by movement code)
-- Gun tip Y: DS:0x23C3 (centered coords)
-- Fire handler: 0x0F40 (checks fire frame, spawns projectile objects)
-- Projectile handler 1: 0x1103 (muzzle flash / small projectile)
-- Projectile handler 2: 0x11BA (larger projectile with secondary sprite)
-- SET_SPRITE_POSITION: 0x039A (adds 160/96 to centered coords, calls JAM driver)
+Spawned at the projectile's position when it hits a wall. Static expanding glow effect.
+
+**Init (AX=0 at 0x1120):**
+```
+[DI+0x0A] = CX (X position — from projectile hit point)
+[DI+0x0C] = DX (Y position)
+[DI+0x1C] = 0x21 (33 — starting sprite index)
+[DI+0x04] = [0x3065] + BX (display set base + offset)
+[DI+0x08] = 0x47 (71 — tick interval ← THIS IS THE KEY TIMING VALUE)
+[DI+0x06] = 0x1103 (self handler)
+```
+
+**Update (AX=2 at 0x1192):**
+```
+AL = [DI+0x1C]                 ; current sprite index
+CMP AL, 0x27 (39)              ; past last sprite?
+  If yes → FREE_SPRITE, deactivate
+  Else → SET_SPRITE_POSITION(handle, X, Y, sprite=AL)
+         INC [DI+0x1C]         ; advance to next sprite
+```
+
+**Sprite sequence:** 33 → 34 → 35 → 36 → 37 → 38 → (39 = die)
+- 33: Small white circle outline (9×7)
+- 34: Blue orb with white ring (13×11)
+- 35: Blue glow ball, medium (15×13)
+- 36: Blue glow ball, large (19×17)
+- 37: White cluster — 4 small circles (19×18)
+- 38: Bubble cluster — scattered circles (20×21)
+
+**Timing:** `[DI+8] = 0x47 (71)` tick interval. Each sprite shows for 71 counter
+ticks. At ~1165 Hz counter rate with ~20 ticks per render frame, each sprite
+shows for 71/20 ≈ 3.5 render frames. Total: 6 sprites × 3.5 = ~21 render frames
+= **~0.36 seconds** at 58fps.
+
+**Python implementation:** `FRAME_HOLD = 4` at 60fps → 6 × 4 / 60 = 0.4 seconds.
+
+#### System 3: Muzzle Flash / Fire Animation (0x0F05-0x0FE0)
+
+Runs independently at the gun position. NOT related to wall hits.
+This creates the sparkle/zap effect around Joe's gun barrel while firing.
+
+**Tick counter:** `[0x23C7]` counts down from 7 (reset to 7 each step)
+**Frame counter:** `[0x23D4]` (JET_FIRE_FRAME) increments each step
+
+**Frame behavior:**
+- Frames 1-16: SET_SPRITE_POSITION for gun sprite at gun position
+  - Spawn 0x1103 trail object at gun_pos + random scatter
+  - Small scatter: Y = random(23)-11, X = random(29)-13
+- Frames 17-24: Gun sprite changes to zap sprites 42-45
+  - Sprite = (frame-8)/2 + 42 → cycles through 42,42,43,43,44,44,45,45
+  - Spawn 0x1103 trail at gun_pos + larger scatter
+  - Large scatter: Y = random(45)-22, X = random(37)-18
+- Frame 25: FREE gun sprite (firing animation ends)
+- Frame 58: Set completion flag [0x305E] = 1
+
+**Random numbers:** `INT 62h DX=0x0B` with AX=N returns random value in [0, N).
+Handler at 0x3AB8 — linear congruential generator.
+
+**NOT YET IMPLEMENTED in Python.** The muzzle flash is cosmetic and lower priority.
+
+#### Our Python Implementation (session 4):
+
+```python
+class Explosion:
+    # Static position, cycles sprites 33→38, FRAME_HOLD=4
+    # Spawned by Shot on wall collision
+
+class Shot:
+    # Moves ±2px per frame, sprite 23 (right) or 24 (left)
+    # On wall hit: append Explosion to shared list, die immediately
+    # On screen exit: die
+    # Shares explosions list with Player via reference
+
+class Player:
+    # self.explosions = [] — shared with Shot objects
+    # self.shots filtered with list replacement
+    # self.explosions filtered with slice assignment (explosions[:] = ...)
+    #   ← CRITICAL: must use slice assignment, not replacement,
+    #      because Shot objects hold a reference to this list
+```
+
+**Bug found and fixed:** List comprehension `self.explosions = [...]` creates a NEW
+list object, breaking the reference held by Shot objects. Explosions appended by shots
+went into the orphaned old list. Fix: use `self.explosions[:] = [...]` (slice assignment)
+to modify the list in-place.
+
+## SESSION 4: GAME TIMING SYSTEM (2026-04-20)
+
+### Global Counter System
+
+The game has TWO counters, both incremented by the timer interrupt handler at 0x441E:
+
+| Counter | Address | INT 62h | Incremented by | Purpose |
+|---------|---------|---------|----------------|---------|
+| Frame counter | CS:0x3AFE | DX=3 | +1 per 0x441E call | Render frame timing |
+| Object counter | CS:0x3AFC | DX=0 | +[CS:0x3B00] per call | Object update scheduling |
+
+`[CS:0x3B00]` is set to 1 by `INT 62h DX=8` (enable) or 0 by `DX=7` (disable).
+When enabled, both counters increment at the same rate.
+
+### Timer Interrupt Rate
+
+The PIT (Programmable Interval Timer) rate depends on the sound driver:
+
+| Driver | PIT Divisor | PIT Rate | Handler | Divider | Counter Rate |
+|--------|-------------|----------|---------|---------|-------------|
+| 0: None | 65536 (default) | 18.2 Hz | 0x4450 | ×64 loop | 1165.2 Hz |
+| 1: Speaker | 1024 | 1165.2 Hz | 0x4462 | ×1 | 1165.2 Hz |
+| 2: Covox | 64 | 18643.5 Hz | 0x44BF | ÷16 | 1165.2 Hz |
+| 3: Sound Master | 128 | 9321.7 Hz | 0x44EC | ÷8 | 1165.2 Hz |
+
+**All drivers produce the same counter rate: ~1165 Hz** (1193182 / 1024).
+
+The no-sound handler (0x4450) compensates by calling 0x441E in a loop 64 times
+per PIT interrupt: `MOV CX, 0x40; CALL 0x441E; LOOP`.
+
+### Render Frame Timing (0x03BA)
+
+```asm
+0x03C9: MOV DX, 3; INT 62h        ; AX = frame counter [CS:0x3AFE]
+0x03CE: SUB AX, [0x235F]          ; delta = current - last_frame_time
+0x03D2: CMP AX, 0x14 (20)         ; wait for 20 counter ticks
+0x03D5: JC 0x03C9                 ; loop if < 20
+0x03D7: CALL 0x4798               ; render tiles
+0x03DA: MOV DX, 3; INT 62h        ; get counter again
+0x03DF: MOV [0x235F], AX          ; save as last_frame_time
+0x03E2: INC [0x2361]              ; increment render frame number
+```
+
+**Render frame rate:** 1165.2 / 20 = **58.26 fps**
+
+### Object Update Scheduling (0x06F8-0x0749)
+
+The main game loop iterates all 100 object slots (0x64 = 100, each 0x20 = 32 bytes):
+
+```asm
+0x06F5: [0x3065] = INT 62h DX=0   ; refresh object counter
+0x06F8: SI = 100, DI = 0x23DE     ; 100 objects starting at DS:0x23DE
+; For each object:
+0x0700: CMP [DI], 0               ; skip if inactive
+0x070B: AX = [0x3065]             ; current counter value
+0x070E: SUB AX, [DI+4]           ; AX = counter - object_next_time
+0x0711: CMP AX, 0                 ; is it time?
+0x0714: JL skip                   ; not yet → skip this object
+; ... activate if needed (AX=1) ...
+0x0738: MOV AX, 2; CALL [DI+6]   ; call update handler
+0x073F: AX = [DI+8]              ; get tick interval
+0x0742: ADD [DI+4], AX           ; next_time += interval
+```
+
+**Object slot layout (32 bytes each):**
+
+| Offset | Size | Name | Description |
+|--------|------|------|-------------|
+| 0x00 | byte | state | 0=inactive, 1=pending, 3=active |
+| 0x01 | byte | visible | 0=hidden, 1=visible |
+| 0x02 | byte | room | Room number this object belongs to |
+| 0x03 | byte | sound_id | Sound slot (0xFF = none) |
+| 0x04 | word | next_time | Counter value for next update |
+| 0x06 | word | handler | Handler function address |
+| 0x08 | word | interval | Counter ticks between updates |
+| 0x0A | word | x | X position (centered coords) |
+| 0x0C | word | y | Y position (centered coords) |
+| 0x0E | word | sprite_handle | Sprite display handle |
+| 0x10 | word | param1 | Handler-specific (e.g., movement delta) |
+| 0x12-0x1F | varies | params | Handler-specific data |
+| 0x1C | byte | sprite_idx | Current sprite index (for animation) |
+| 0x1E | byte | switch_id | Switch state index |
+| 0x1F | byte | var_id | Variable state index |
+
+### Tick Interval Values (from [DI+8])
+
+| Value | Hex | Ticks/frame | Seconds/update | Used by |
+|-------|-----|-------------|----------------|---------|
+| 15 | 0x0F | ~0.75 | 0.013s | Moving projectile (0xFE3) |
+| 71 | 0x47 | ~3.55 | 0.061s | Explosion/trail (0x1103), display set objects |
+| 129 | 0x81 | ~6.45 | 0.111s | Timer/slow objects |
+
+**Formula:** `frames_per_update = interval / 20` (since render loop consumes ~20 ticks).
+**Python FRAME_HOLD:** `round(interval / 20)` for objects that animate per-update.
+
+### Converting Original Timing to Python (60fps)
+
+For any object with `[DI+8] = N`:
+- Original updates per second: 1165.2 / N
+- Original render frames between updates: N / 20
+- Python FRAME_HOLD at 60fps: `round(N / 20)`
+
+| [DI+8] | Updates/sec | Frames between | Python FRAME_HOLD |
+|--------|-------------|----------------|-------------------|
+| 15 | 77.7 | 0.75 | 1 (every frame) |
+| 71 | 16.4 | 3.55 | 4 |
+| 129 | 9.0 | 6.45 | 6 |
+
+### Key Timing Addresses
+
+| Address | Type | Description |
+|---------|------|-------------|
+| CS:0x3AFC | word | Object counter (INT 62h DX=0 reads, DX=9 writes) |
+| CS:0x3AFE | word | Frame counter (INT 62h DX=3 reads) |
+| CS:0x3B00 | word | Counter increment (0 or 1, set by DX=7/DX=8) |
+| CS:0x3B06 | dword | Saved INT 8 vector (original timer handler) |
+| CS:0x3B16 | byte | Timer interrupt divider (counts down) |
+| CS:0x3B17 | byte | Sub-divider for original INT 8 chain (counts from 2) |
+| CS:0x3B18 | byte | Sub-divider for palette update (counts from 0x20=32) |
+| DS:0x235F | word | Last render frame counter value |
+| DS:0x2361 | word | Render frame number (incremented per render) |
+| DS:0x3065 | word | Cached object counter (refreshed each game loop) |
+| DS:0x23C7 | word | Fire animation tick counter (counts down from 7) |
+| DS:0x23CF | word | Fire cooldown timestamp |
+
+### INT 62h Function Table (dispatch at 0x3A76 via jump table at DS:0x4778)
+
+| DX | Handler | Description |
+|----|---------|-------------|
+| 0 | 0x41BC | Read object counter [CS:0x3AFC] → AX |
+| 1 | 0x3967 | Read input state |
+| 2 | 0x3A51 | Unknown |
+| 3 | 0x41C6 | Read frame counter [CS:0x3AFE] → AX |
+| 4 | 0x42B3 | Render/update display list |
+| 5 | 0x3A8C | NOP (RET) |
+| 7 | 0x41D3 | Disable counter: [CS:0x3B00] = 0 |
+| 8 | 0x41CB | Enable counter: [CS:0x3B00] = 1 |
+| 9 | 0x41C1 | Write object counter: [CS:0x3AFC] = AX |
+| 0xA | 0x3A8D | Seed random number generator |
+| 0xB | 0x3AB8 | Random number: returns AX = random [0, AX) |
+
+### Session 4 Key Addresses
+
+| Address | Description |
+|---------|-------------|
+| 0x03BA | RENDER_FRAME — copies maps, waits 20 ticks, renders tiles |
+| 0x0EAA | Fire button handler — creates moving projectile |
+| 0x0EDD | Gun position offset: ADD DX,2; SUB CX,12; direction*24 |
+| 0x0F05 | Fire animation handler (muzzle flash, independent of projectile) |
+| 0x0FE3 | Moving projectile handler (arrow sprite, ±2px movement) |
+| 0x1005 | Projectile init (sprite=BL+23, movement=BL*4-2) |
+| 0x1084 | Projectile update (move, check room transition, check collision) |
+| 0x1103 | Explosion/trail handler (sprites 33→38, [DI+8]=71) |
+| 0x11BA | Secondary trail handler (with extra sprite handle at [DI+0x14]) |
+| 0x3A76 | INT 62h handler entry (STI, dispatch via [DS:BP+0x4778]) |
+| 0x3AB8 | Random number generator (linear congruential, AX=range) |
+| 0x441E | Timer tick handler (increments both counters) |
+| 0x4450 | No-sound timer ISR (calls 0x441E × 64 per PIT interrupt) |
+| 0x4462 | Speaker timer ISR (calls 0x441E × 1) |
+| 0x44BF | Covox timer ISR (divider 16, calls 0x441E) |
+| 0x44EC | Sound Master timer ISR (divider 8, calls 0x441E) |
 
 ## REVERSE ENGINEERING METHODOLOGY
 
