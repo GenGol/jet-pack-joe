@@ -235,7 +235,7 @@ class Shot:
             self.alive = False
 
     def draw(self, surface, sprites):
-        idx = 8 if self.dx > 0 else 9
+        idx = 23 if self.dx > 0 else 24
         sp = sprites[idx]
         surface.blit(sp["surf"], (int(self.x) + sp["x_off"], int(self.y) + sp["y_off"]))
 
@@ -354,7 +354,12 @@ class Player:
 
     def fire(self):
         if self.fire_cooldown <= 0 and len(self.shots) < 3:
-            self.shots.append(Shot(self.x + self.direction * 8, self.y - 7, self.direction * SHOT_SPEED))
+            # Gun tip position from Joe's sprite geometry:
+            # Right (dir=1): gun extends to x_end=+18, barrel at ~y=+1
+            # Left (dir=-1): gun extends to x_off=-16, barrel at ~y=+1
+            gun_x = self.x + (13 if self.direction > 0 else -11)
+            gun_y = self.y + 1
+            self.shots.append(Shot(gun_x, gun_y, self.direction * SHOT_SPEED))
             self.fire_cooldown = 10
 
     def draw(self, surface, sprites):
@@ -930,6 +935,14 @@ class JetPackJoe:
                             self.current_room -= 1
                     elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
                         self.set_level(event.key - pygame.K_1)
+                    elif event.key == pygame.K_s:
+                        n = 0
+                        while os.path.exists(os.path.join(BASE, f"screenshot_{n:03d}.png")):
+                            n += 1
+                        fname = f"screenshot_{n:03d}.png"
+                        shot = self.window.convert(24)
+                        pygame.image.save(shot, os.path.join(BASE, fname))
+                        print(f"Saved {fname}")
 
             if not self.game_over:
                 keys = pygame.key.get_pressed()

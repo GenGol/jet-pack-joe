@@ -1248,6 +1248,58 @@ Fix: at frame 17, clear the collision bitmap at the cage wall positions
 - Level trailer: room 68 data (offsets[68] + 8 + 4 header words)
 - Room read pointer setup: 0x04F8 (sets DS:0x3061/0x3063 for READ_WORD)
 
+### Fix 13: Projectile sprite and position
+
+**Original game projectile system (from GAME.EXE 0x0F40-0x0FE0):**
+
+The fire system uses `JET_FIRE_FRAME` at DS:0x23D4 as an animation counter.
+When fire is pressed, this counter increments each frame. Different ranges
+trigger different visual effects:
+
+- Frame 0-7: Small muzzle flash near gun (left direction)
+- Frame 8-15: Small muzzle flash (right direction), sprite = (frame/2) + 42
+- Frame ≥ 16: Large projectile at max distance
+- Frame = 17 (0x11): collision check against enemies
+- Frame = 50 (0x32): sets completion flag at DS:0x305E
+
+The projectile is NOT a single moving object. The visual "movement" comes from
+spawning static display objects at progressively further positions each frame.
+Each display object has a lifetime of 7 frames (init at 33, destroyed at 39).
+
+**Gun position tracking:**
+- Gun tip position stored at DS:0x23C1 (X) and DS:0x23C3 (Y) in centered coords
+- Updated incrementally by the player movement code with collision nudging
+- Three write paths: room entry (0x0C80), movement (0x0D60), direction change (0x0E35)
+- The fire handler reads these to spawn projectiles at the gun tip
+
+**Projectile handler (0x1103):**
+- Init (AX=0 at 0x1120): stores position, sets lifetime to 0x21 (33), sprite type 0x47 (71)
+- Update (AX=2 at 0x1192): calls SET_SPRITE_POSITION (0x039A), increments lifetime
+- At lifetime 39: FREE_SPRITE and deactivate
+- Position is FIXED — no per-frame movement
+
+**Second projectile handler (0x11BA):**
+- Similar to first but with additional sprite handle at [DI+0x14]
+- At lifetime 37: frees the secondary sprite
+- At lifetime 39: frees primary sprite and deactivates
+
+**Our simplified implementation:**
+- Single moving bullet using sprites 23 (right) / 24 (left)
+- Gun position derived from Joe's sprite geometry:
+  - Right: gun_x = Joe.x + 13 (sprite 1 x_end=+18, bullet x_off=-4, tip at +5)
+  - Left: gun_x = Joe.x - 11 (sprite 0 x_off=-16, bullet x_off=-5, tip at -6)
+  - gun_y = Joe.y + 1 (gun barrel at body center)
+- Bullet moves at SHOT_SPEED per frame, destroyed on wall collision or timeout
+
+**Key addresses:**
+- JET_FIRE_FRAME: DS:0x23D4 (fire animation counter)
+- Gun tip X: DS:0x23C1 (centered coords, updated by movement code)
+- Gun tip Y: DS:0x23C3 (centered coords)
+- Fire handler: 0x0F40 (checks fire frame, spawns projectile objects)
+- Projectile handler 1: 0x1103 (muzzle flash / small projectile)
+- Projectile handler 2: 0x11BA (larger projectile with secondary sprite)
+- SET_SPRITE_POSITION: 0x039A (adds 160/96 to centered coords, calls JAM driver)
+
 ## REVERSE ENGINEERING METHODOLOGY
 
 ### Step 1: Find the Data Segment (DS)
