@@ -1286,13 +1286,22 @@ Each display object has a lifetime of 7 frames (init at 33, destroyed at 39).
 **Our implementation (matching original mechanism):**
 - Fire creates a Shot with tick counter (8) and fire_frame (0)
 - Each tick: position advances 2px, tick counter decrements
-- At tick 0: reset to 7, increment fire_frame, spawn trail sprite
+- At tick 0: reset to 7 (or 2 if wall hit), increment fire_frame, spawn trail sprite
   - Frames 0-15: small projectile sprite (23 right / 24 left)
-  - Frames 16-23: explosion sprites 42-49 (growing muzzle flash)
+  - Frames 16-23: electric zap sprites 42-45 (wall hit explosion)
 - Trail sprites live 7 ticks each, creating visible bullet trail
 - Frame 24: shot complete, destroyed
-- Wall collision: immediate destruction
+- Wall collision: position backs up outside wall, stops advancing, frames continue naturally
+  - Frame advancement speeds up (tick=2) so explosion plays quickly
 - Rapid fire: cooldown of 8 ticks (matches original [0x23C7] tick counter), no shot limit
+
+**Known issues (to revisit):**
+- Explosion sprites (42-45) may not perfectly match the original visual
+- The original game uses display set (DS00.DAT) entries for trail objects, not SP00.DAT sprites
+  - Trail object handler 0x1103 sets [DI+8]=0x47 (71) = display set entry, not sprite index
+  - The exact visual from DS00.DAT has not been extracted
+- Wall hit timing may still differ from original (original runs at different tick rate)
+- Joe's firing animation (cycling through frames 0-7 via 0x039A) not implemented
 
 **Key addresses:**
 - JET_FIRE_FRAME: DS:0x23D4 (fire animation counter)

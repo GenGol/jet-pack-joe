@@ -229,30 +229,30 @@ class Shot:
         self.tick = 8  # counts down per update, new frame at 0
         self.trail = []  # list of (x, y, sprite_idx, life)
         self.alive = True
+        self.hit_wall = False
 
     def update(self, cbm):
         if not self.alive:
             return
-        # Advance projectile position each tick
-        self.x += self.direction * 2
+        # Advance projectile position each tick (unless hit wall)
+        if not self.hit_wall:
+            self.x += self.direction * 2
+            # Check wall collision
+            ix, iy = int(self.x) // 2, int(self.y) // 2
+            if ix < 0 or ix >= HALF_W or self.x < 0 or self.x >= SCREEN_W:
+                self.x -= self.direction * 2  # back up to visible position
+                self.hit_wall = True
+            elif 0 <= ix < HALF_W and 0 <= iy < HALF_H and cbm[iy * HALF_W + ix]:
+                self.x -= self.direction * 2  # back up outside wall
+                self.hit_wall = True
         self.tick -= 1
-        # Check wall collision
-        ix, iy = int(self.x) // 2, int(self.y) // 2
-        if ix < 0 or ix >= HALF_W or self.x < 0 or self.x >= SCREEN_W:
-            self.alive = False
-            return
-        if 0 <= ix < HALF_W and 0 <= iy < HALF_H and cbm[iy * HALF_W + ix]:
-            self.alive = False
-            return
         if self.tick <= 0:
-            self.tick = 7
+            self.tick = 2 if self.hit_wall else 7
             # Spawn trail sprite at current position
-            if self.fire_frame < 8:
-                sp_idx = 23 if self.direction > 0 else 24
-            elif self.fire_frame < 16:
+            if self.fire_frame < 16:
                 sp_idx = 23 if self.direction > 0 else 24
             else:
-                sp_idx = min(49, 42 + (self.fire_frame - 16) // 2)
+                sp_idx = min(45, 42 + (self.fire_frame - 16) // 2)
             self.trail.append([int(self.x), int(self.y), sp_idx, 7])
             self.fire_frame += 1
             if self.fire_frame >= 24:
