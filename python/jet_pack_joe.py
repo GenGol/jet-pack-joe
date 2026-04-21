@@ -660,9 +660,10 @@ class JetPackJoe:
                         fg_idx = (row + dr) * MAP_COLS + (col + dc)
                         if fan_in_bg:
                             # Background fan: draw opaquely here (before Joe)
+                            # Original uses MODIFY_SCREEN_MAP which writes to background
+                            # and skips positions where foreground tiles exist
                             if ti < len(self.tile_surfs):
                                 surface.blit(self.tile_surfs[ti], ((col + dc) * TILE_W, (row + dr) * TILE_H))
-                            obj.setdefault("fg_tiles", {})[fg_idx] = 0  # skip in render_foreground
                         else:
                             # Foreground fan: defer to render_foreground (after Joe, with colorkey)
                             obj.setdefault("fg_tiles", {})[fg_idx] = ti
