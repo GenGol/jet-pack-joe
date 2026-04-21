@@ -571,7 +571,7 @@ class JetPackJoe:
             for obj in self.room_objects[room_idx]:
                 if obj["type"] in (6, 7) and "fg_tile" in obj:
                     fg_overrides[obj["params"][0]] = obj["fg_tile"]
-                if obj["type"] in (1, 2, 3, 4, 5, 10) and "fg_tiles" in obj:
+                if obj["type"] in (1, 2, 3, 4, 5, 9, 10) and "fg_tiles" in obj:
                     fg_overrides.update(obj["fg_tiles"])
         fg_bytes = map_data[base + 640:base + 960]
         for i, b in enumerate(fg_bytes):
@@ -737,6 +737,7 @@ class JetPackJoe:
                                     if 0 <= bx < HALF_W and 0 <= by < HALF_H:
                                         cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
                         obj["field_active"] = False
+                        obj.pop("fg_tiles", None)
                     continue
                 # Field ON — draw animation and collision
                 frame_tiles = [
@@ -765,11 +766,8 @@ class JetPackJoe:
                 ti_idx = 0
                 while tx < x_right and ti_idx < len(tiles):
                     ti = tiles[ti_idx]
-                    if ti < len(self.tile_surfs):
-                        ts = self.tile_surfs[ti]
-                        ts.set_colorkey((0, 0, 0))
-                        surface.blit(ts, (tx, row * TILE_H))
-                        ts.set_colorkey(None)
+                    fg_idx = row * MAP_COLS + tx // TILE_W
+                    obj.setdefault("fg_tiles", {})[fg_idx] = ti
                     tx += TILE_W
                     ti_idx += 1
                 # Erase old collision (shape 12: 48w×4h rows 1-4), then write new (shape 11: 48w×2h rows 2-3)
