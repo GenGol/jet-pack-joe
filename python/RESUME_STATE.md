@@ -2250,6 +2250,41 @@ Check which MODIFY function the original handler calls:
 - Calls 0x04B4 → use fg_tiles (foreground)
 - Calls 0x04D2 → draw to surface directly (background)
 
+### Fix 20: Vertical Field Collision Not Erased When Switch Turns It Off
+
+**Bug:** In L1 R0, after hitting the left switch to turn off the vertical lightning
+field, Joe was still blocked by invisible collision at the field's position.
+
+**Root cause:** The vertical field code had no OFF path for collision. When
+`switch_state == 0`, it did `continue` immediately — skipping collision erase.
+The collision bytes written when the field was ON stayed in the bitmap permanently.
+
+**Original behavior (from shared handler 0x1E3C update at 0x1EB5):**
+```
+If switch_state == 0 (field OFF):
+  If field was active ([DI+0x1D] != 0):
+    MODIFY_FOREGROUND_MAP(frame=4, table) — clear animation tiles (all tile 0)
+    DRAW_VISUAL(shape, X, Y) — erase collision from bitmap (restore from backup)
+    [DI+0x1D] = 0 — mark inactive
+```
+
+**Fix:** Added the OFF path matching the original:
+- Track `obj["field_active"]` flag (matches `[DI+0x1D]`)
+- When field turns OFF and was active: restore collision bitmap from backup
+  using shape 8 (6w×35h, rows 1-35) for vertical field
+- Same pattern already implemented correctly for horizontal field
+
+**Pattern for all field types (v_field, h_field):**
+```python
+if switch_state == 0:  # OFF
+    if obj.get("field_active") and backup:
+        # Restore collision from backup at erase shape positions
+        obj["field_active"] = False
+    continue
+# ON path: draw animation, write collision
+obj["field_active"] = True
+```
+
 ### Key Addresses (session 4 continued)
 
 | Address | Description |
