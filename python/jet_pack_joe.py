@@ -747,29 +747,13 @@ class JetPackJoe:
                     [124, 125, 126, 127, 128, 129],
                 ]
                 frame = (obj["timer"] // 3) % 4
-                map_data = self.levels[self.current_level]["map"]
-                base = room_idx * ROOM_BYTES
-                bg_words = struct.unpack_from('<320H', map_data, base)
-                # Find x_left and x_right by scanning for solid tiles left/right
-                x_left = 0
-                for c in range(col - 1, -1, -1):
-                    if (bg_words[row * MAP_COLS + c] >> 10) & 0x3F != 0:
-                        x_left = (c + 1) * TILE_W
-                        break
-                x_right = SCREEN_W
-                for c in range(col + 1, MAP_COLS):
-                    if (bg_words[row * MAP_COLS + c] >> 10) & 0x3F != 0:
-                        x_right = c * TILE_W
-                        break
                 tiles = frame_tiles[frame]
-                tx = x_left
-                ti_idx = 0
-                while tx < x_right and ti_idx < len(tiles):
-                    ti = tiles[ti_idx]
-                    fg_idx = row * MAP_COLS + tx // TILE_W
-                    obj.setdefault("fg_tiles", {})[fg_idx] = ti
-                    tx += TILE_W
-                    ti_idx += 1
+                # MODIFY_FOREGROUND_MAP: 6 tiles at offsets 0-5 from location
+                obj["fg_tiles"] = {}
+                for i, ti in enumerate(tiles):
+                    fg_idx = row * MAP_COLS + col + i
+                    if fg_idx < MAP_ROWS * MAP_COLS:
+                        obj["fg_tiles"][fg_idx] = ti
                 # Erase old collision (shape 12: 48w×4h rows 1-4), then write new (shape 11: 48w×2h rows 2-3)
                 if backup:
                     for r in range(1, 5):
