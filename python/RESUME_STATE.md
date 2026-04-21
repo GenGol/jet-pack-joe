@@ -2207,6 +2207,49 @@ alternating rows), which was previously visual-only with no collision.
 
 No command-line level select exists. Levels play in fixed sequence.
 
+### Fix 19: Background Fan Overwriting Foreground Field Tiles
+
+**Bug:** In L3 R6, the right horizontal field lightning was invisible because the
+brown fan (type 3) at (13,7) was overwriting the h_field's foreground tiles.
+
+**Root cause:** Two different map modification functions exist in the original:
+
+#### MODIFY_FOREGROUND_MAP (0x04B4) — writes to foreground map at DS:0x5D7
+```
+Used by: fields (8/9), cages (10), doors (5), beam animations
+Unconditionally writes tile values to the foreground map.
+```
+
+#### MODIFY_SCREEN_MAP (0x04D2) — writes to background map at DS:0x357
+```
+Used by: fan_3/fan_4 (background fans)
+CONDITIONALLY writes: checks [BX+DI+0x280] (foreground map at same position)
+If foreground tile != 0xFF → SKIP the write (don't overwrite foreground content)
+If foreground tile == 0xFF → write to background map
+```
+
+**This is the key architectural insight:** The original game has a layering system where
+foreground tiles take priority. Background fans (fan_3/fan_4) use MODIFY_SCREEN_MAP
+which respects existing foreground content. Fields use MODIFY_FOREGROUND_MAP which
+writes to the foreground layer directly.
+
+#### Fan handler architecture (two separate handlers):
+
+| Fan Types | Handler | Map Function | Layer |
+|-----------|---------|-------------|-------|
+| fan_1, fan_2 | 0x1D40 | 0x04B4 (MODIFY_FOREGROUND_MAP) | Foreground |
+| fan_3, fan_4 | 0x1DBE | 0x04D2 (MODIFY_SCREEN_MAP) | Background |
+
+**Fix:** Removed `fg_tiles[idx] = 0` from background fan code. Background fans now
+only draw to the surface directly and don't touch fg_tiles, so foreground content
+(like h_field lightning) renders on top correctly.
+
+**Rule for future objects:** Any object that writes to the background layer should
+NOT set fg_tiles. Only objects that write to the foreground layer should use fg_tiles.
+Check which MODIFY function the original handler calls:
+- Calls 0x04B4 → use fg_tiles (foreground)
+- Calls 0x04D2 → draw to surface directly (background)
+
 ### Key Addresses (session 4 continued)
 
 | Address | Description |
