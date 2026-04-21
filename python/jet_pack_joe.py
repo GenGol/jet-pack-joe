@@ -707,6 +707,86 @@ class JetPackJoe:
                         ts.set_colorkey(None)
                     ty += TILE_H
                     ti_idx += 1
+                # Write collision for active vertical field
+                cbm = self.get_collision_bitmap(room_idx)[0]
+                backup = self.cbm_backup.get(room_idx)
+                hx = (col * TILE_W) // 2
+                # Shape 7: 2w at cols 3-4, alternating rows 0-34
+                for r in range(0, 35, 2):
+                    by = y_top // 2 + r
+                    for c in [3, 4]:
+                        bx = hx + c
+                        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                            cbm[by * HALF_W + bx] = 1
+                continue
+            elif ot == 9:  # horiz_field — horizontal lightning, GAME.EXE 0x131F
+                switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
+                col = obj["params"][0] % MAP_COLS
+                row = obj["params"][0] // MAP_COLS
+                cbm = self.get_collision_bitmap(room_idx)[0]
+                backup = self.cbm_backup.get(room_idx)
+                hy = (row * TILE_H) // 2
+                if self.switch_state[switch_id] == 0:
+                    # Field OFF — erase collision (restore from backup, shape 12: 48w×4h rows 1-4)
+                    if obj.get("field_active"):
+                        if backup:
+                            for r in range(1, 5):
+                                by = hy + r
+                                for c in range(48):
+                                    bx = (col * TILE_W) // 2 + c
+                                    if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                                        cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
+                        obj["field_active"] = False
+                    continue
+                # Field ON — draw animation and collision
+                frame_tiles = [
+                    [64, 65, 66, 67, 68, 69],
+                    [104, 105, 106, 107, 108, 109],
+                    [84, 85, 86, 87, 88, 89],
+                    [124, 125, 126, 127, 128, 129],
+                ]
+                frame = (obj["timer"] // 3) % 4
+                map_data = self.levels[self.current_level]["map"]
+                base = room_idx * ROOM_BYTES
+                bg_words = struct.unpack_from('<320H', map_data, base)
+                # Find x_left and x_right by scanning for solid tiles left/right
+                x_left = 0
+                for c in range(col - 1, -1, -1):
+                    if (bg_words[row * MAP_COLS + c] >> 10) & 0x3F != 0:
+                        x_left = (c + 1) * TILE_W
+                        break
+                x_right = SCREEN_W
+                for c in range(col + 1, MAP_COLS):
+                    if (bg_words[row * MAP_COLS + c] >> 10) & 0x3F != 0:
+                        x_right = c * TILE_W
+                        break
+                tiles = frame_tiles[frame]
+                tx = x_left
+                ti_idx = 0
+                while tx < x_right and ti_idx < len(tiles):
+                    ti = tiles[ti_idx]
+                    if ti < len(self.tile_surfs):
+                        ts = self.tile_surfs[ti]
+                        ts.set_colorkey((0, 0, 0))
+                        surface.blit(ts, (tx, row * TILE_H))
+                        ts.set_colorkey(None)
+                    tx += TILE_W
+                    ti_idx += 1
+                # Erase old collision (shape 12: 48w×4h rows 1-4), then write new (shape 11: 48w×2h rows 2-3)
+                if backup:
+                    for r in range(1, 5):
+                        by = hy + r
+                        for c in range(48):
+                            bx = (col * TILE_W) // 2 + c
+                            if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                                cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
+                for r in [2, 3]:
+                    by = hy + r
+                    for c in range(48):
+                        bx = x_left // 2 + c
+                        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                            cbm[by * HALF_W + bx] = 1
+                obj["field_active"] = True
                 continue
             elif ot in (6, 7):  # right_switch / left_switch
                 switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0

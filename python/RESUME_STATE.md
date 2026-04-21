@@ -934,7 +934,7 @@ Located in debug section starting around 0x10A8E:
    - **Toggle switch (type 17) — WORKING ✓ (session 4):**
      - Bitwise NOT toggle, two switch IDs, edge-triggered
      - Background tiles 556-559 (4 visual states)
-   - **Not yet implemented**: horiz_field (9), generators (11/12/20),
+   - **Not yet implemented**: generators (11/12/20),
      sensor_switch (18), plates (15/16)
    - **Not yet implemented gameplay**: field killing Joe, enemy AI,
      muzzle flash animation (cosmetic, low priority)
@@ -2125,6 +2125,71 @@ Key mechanics:
 - R10: 2 toggle switches (sw15) control door; h_field at sw200 is PERMANENT (no switch)
 - R13: 3 sensor switches (sw22,23,24) control 3 doors — walk past to open
 - R7→R8: teleporter chain
+
+### Fix 18: Horizontal Field (type 9) — GAME.EXE 0x131F
+
+**Uses the same shared handler (0x1E3C) as vertical_field (type 8) and glow_ball (type 13).**
+
+**Parameters:** location, switch_id
+
+**Caller setup (0x131F):**
+```
+READ_WORD → BX = location
+READ_WORD → CX = switch_id
+DX = 0x0B (11) — collision shape index
+SI = 0x3B9F — animation table
+CALL 0x1E3C (shared field handler)
+```
+
+**Shared handler init (0x1E5E):**
+```
+[DI+0x08] = 0x4F (79) — tick interval
+[DI+0x16] = DX (collision shape: 11 for horiz, 7 for vert)
+[DI+0x18] = SI (animation table address)
+[DI+0x1E] = switch_id
+[DI+0x1D] = 0 (field active flag)
+```
+
+**Shared handler update (0x1EB5):**
+```
+If switch_state[switch_id] == 0 (field OFF):
+  If was active: clear tiles (frame 4), erase collision (DRAW_VISUAL shape+1)
+  Return
+If field ON:
+  DRAW_VISUAL(shape+1, X, Y) — erase old collision (shape 12 for horiz)
+  Increment frame counter, frame = counter & 3
+  MODIFY_FOREGROUND_MAP(frame, table) — draw animation tiles
+  DRAW_COLLISION(shape, type=1, X, Y) — write collision (shape 11 for horiz)
+  Set active flag
+```
+
+**Horizontal field animation table (DS:0x3B9F):**
+
+| Frame | Tiles (6 in a row, offsets 0-5) |
+|-------|-------------------------------|
+| 0 | 64, 65, 66, 67, 68, 69 |
+| 1 | 104, 105, 106, 107, 108, 109 |
+| 2 | 84, 85, 86, 87, 88, 89 |
+| 3 | 124, 125, 126, 127, 128, 129 |
+| 4 (clear) | 0, 0, 0, 0, 0, 0 |
+
+**Collision shapes:**
+
+| Shape | Size | Purpose |
+|-------|------|---------|
+| 11 (write) | 48w × 2h, rows 2-3 | Horizontal collision bar |
+| 12 (erase) | 48w × 4h, rows 1-4 | Slightly larger for clean erase |
+
+**Comparison: all three field types using shared handler 0x1E3C:**
+
+| Type | Handler | Shape (write/erase) | Anim Table | Tile Layout |
+|------|---------|---------------------|------------|-------------|
+| 8 v_field | 0x1336 | 7/8 (2w×35h / 6w×35h) | DS:0x3B95 | 6 tiles vertical (col) |
+| 9 h_field | 0x131F | 11/12 (48w×2h / 48w×4h) | DS:0x3B9F | 6 tiles horizontal (row) |
+| 13 glow_ball | 0x134D | 5/6 | DS:0x3BA9 | (different layout) |
+
+**Also fixed:** Added collision bitmap writing for vertical_field (shape 7: 2w at cols 3-4,
+alternating rows), which was previously visual-only with no collision.
 
 ### Permanent Hazards (no switch to disable)
 
