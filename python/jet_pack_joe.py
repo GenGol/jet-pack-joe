@@ -765,7 +765,7 @@ class JetPackJoe:
                 for r in [2, 3]:
                     by = hy + r
                     for c in range(48):
-                        bx = x_left // 2 + c
+                        bx = (col * TILE_W) // 2 + c
                         if 0 <= bx < HALF_W and 0 <= by < HALF_H:
                             cbm[by * HALF_W + bx] = 1
                 obj["field_active"] = True
