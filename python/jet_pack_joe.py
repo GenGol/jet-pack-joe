@@ -669,10 +669,23 @@ class JetPackJoe:
                             obj.setdefault("fg_tiles", {})[fg_idx] = ti
                 continue
             elif ot == 8:  # vertical_field — lightning using actual game animation tiles
-                # Check switch state — only draw if switch is ON
                 switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
+                col = obj["params"][0] % MAP_COLS
+                row = obj["params"][0] // MAP_COLS
+                cbm = self.get_collision_bitmap(room_idx)[0]
+                backup = self.cbm_backup.get(room_idx)
+                hx = (col * TILE_W) // 2
                 if self.switch_state[switch_id] == 0:
-                    continue  # field is OFF, don't draw lightning
+                    # Field OFF — erase collision (restore from backup, shape 8: 6w×35h rows 1-35)
+                    if obj.get("field_active") and backup:
+                        for r in range(1, 36):
+                            by = (row * TILE_H) // 2 + r
+                            for c in range(1, 7):
+                                bx = hx + c
+                                if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                                    cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
+                        obj["field_active"] = False
+                    continue
                 # 4 frames, 6 rows each. Tiles from game data (confirmed via GAME.EXE disassembly)
                 frame_tiles = [
                     [81, 101, 121, 141, 161, 181],
@@ -709,9 +722,6 @@ class JetPackJoe:
                     ty += TILE_H
                     ti_idx += 1
                 # Write collision for active vertical field
-                cbm = self.get_collision_bitmap(room_idx)[0]
-                backup = self.cbm_backup.get(room_idx)
-                hx = (col * TILE_W) // 2
                 # Shape 7: 2w at cols 3-4, alternating rows 0-34
                 for r in range(0, 35, 2):
                     by = y_top // 2 + r
@@ -719,6 +729,7 @@ class JetPackJoe:
                         bx = hx + c
                         if 0 <= bx < HALF_W and 0 <= by < HALF_H:
                             cbm[by * HALF_W + bx] = 1
+                obj["field_active"] = True
                 continue
             elif ot == 9:  # horiz_field — horizontal lightning, GAME.EXE 0x131F
                 switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
