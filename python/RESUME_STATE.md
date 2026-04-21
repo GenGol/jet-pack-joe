@@ -926,8 +926,16 @@ Located in debug section starting around 0x10A8E:
      - Shared explosions list uses slice assignment to preserve Shot references
      - Fire cooldown: 8 frames between shots
      - Gun offset: ±12 X, +2 Y from player position
+   - **Teleporter (type 19) — WORKING ✓ (session 4):**
+     - Distance-based trigger detection, armed flag prevents re-trigger
+     - Beam-out animation (forward 0→16) then beam-in (reverse 15→0)
+     - Player frozen and hidden during beam animations
+     - Cross-room and same-room teleport with bounce-back prevention
+   - **Toggle switch (type 17) — WORKING ✓ (session 4):**
+     - Bitwise NOT toggle, two switch IDs, edge-triggered
+     - Background tiles 556-559 (4 visual states)
    - **Not yet implemented**: horiz_field (9), generators (11/12/20),
-     teleporter (19), sensor_switch (18), plates (15/16), toggle_switch (17)
+     sensor_switch (18), plates (15/16)
    - **Not yet implemented gameplay**: field killing Joe, enemy AI,
      muzzle flash animation (cosmetic, low priority)
 
@@ -1954,7 +1962,205 @@ assert len(backup) == HALF_W * HALF_H
 4. **Not clamping state** → array index out of bounds
 5. **Modifying backup** → erase restores wrong values (backup must be immutable after creation)
 
+## SESSION 4 CONTINUED: TELEPORTER, TOGGLE SWITCH, BEAM ANIMATIONS (2026-04-21)
+
+### Fix 15: Teleporter (type 19) — GAME.EXE 0x2219
+
+**Only exists in Level 3** (rooms 4, 5, 7, 8, 10, 13-18). Most teleport within the
+same room (maze puzzles), some go between rooms.
+
+**Parameters:** location, dest_room, dest_tile
+
+**Init (0x2241):**
+```
+[DI+0x08] = 0x3E (62) — tick interval
+[DI+0x10] = CX, [DI+0x12] = DX — position (BLOCK_TO_XY)
+[DI+0x16] = dest_room
+[DI+0x18] = dest_tile
+[DI+0x1D] = 1 — armed flag
+```
+
+**Update (0x2290) — Two collision checks:**
+1. `CHECK_COLLISION(shape=13, X=tele_x, Y=tele_y)` — outer boundary (cage walls)
+2. `CHECK_COLLISION(shape=4, X=tele_x+16, Y=tele_y+12)` — inner trigger
+
+**Decision logic:**
+- Joe NOT in trigger → arm (unless on boundary → disarm)
+- Joe IN trigger AND NOT on boundary AND armed → TELEPORT
+- Joe IN trigger AND on boundary → skip (at edge, not centered)
+
+**Teleport action (0x22C5):**
+```
+[0x23BA] = 1 (room change flag)
+[0x23BB] = dest_room
+[0x23BF] = dest_tile
+INC [0x305F]
+ADD [0x23D2], 0x3E8
+```
+
+**Main loop handles room change in two phases:**
+1. `[0x23BA] == 1`: Spawn beam-OUT (0x1F18) at source, increment to 2
+2. `[0x23BA] == 2`: Load dest room, spawn beam-IN (0x1FBF) at destination
+
+**Python implementation:**
+- Simplified trigger: distance-based (`dx < 10, dy < 8` from teleporter center)
+- Boundary check: Joe near left/right walls of teleporter area
+- On teleport: start beam-out → when done, move Joe → start beam-in
+- `return` from update_objects to stop processing after teleport
+- Disarm ALL teleporters in destination room to prevent bounce-back
+- Player frozen during beam animations
+
+**Bounce-back bug (found and fixed):**
+When teleporting within the same room, the destination teleporter would immediately
+fire and send Joe back. Fix: disarm all teleporters in the destination room after
+teleporting, and `return` from the object loop.
+
+**Teleporter has no visual of its own** — the green border tiles (177-179, 197-199)
+are static foreground tiles placed in the map data.
+
+### Fix 16: Beam-Out and Beam-In Animations
+
+Both use the **cage disappear animation table** at DS:0x3389 (17 frames, tiles 213-219, 234-239).
+
+**Beam-out (0x1F18):** Plays frames 0→16 (forward = dissolve away)
+- Frame 12: Joe's sprite is freed (Joe disappears)
+- Frame 17: deactivate, DEC captive count, INC [0x23B9]
+- `[DI+0x08] = 0x46 (70)` tick interval → FRAME_HOLD = 4
+
+**Beam-in (0x1FBF):** Plays frames 15→0 (reverse = materialize)
+- Frame 12: Joe appears (CALL 0x0C7E positions Joe)
+- Frame 0xFF (after 0): final cleanup tile, deactivate
+- `[DI+0x08] = 0x46 (70)` tick interval → FRAME_HOLD = 4
+
+**Python implementation:**
+- `self.beam_out` dict: tracks source tile, frame (0→16), timer
+- `self.beam_in` dict: tracks dest tile, frame (15→0), timer
+- Sequence: beam_out completes → teleport Joe → beam_in starts
+- Joe hidden during beam-out frame >= 12 and beam-in frame > 12
+- Player input frozen during both animations
+- BEAM_FRAMES table: same 17 entries as CAGE_DISAPPEAR
+
+### Fix 17: Toggle Switch (type 17) — GAME.EXE 0x213C
+
+**Parameters:** location, switch_id_1, switch_id_2
+
+**Init (0x215E):**
+```
+[DI+0x08] = 0x80 (128) — tick interval
+[DI+0x1E] = switch_id_1
+[DI+0x1F] = switch_id_2
+Immediately calls update (AX=2)
+```
+
+**Update (0x21B4):**
+```
+1. CHECK_COLLISION(shape=4, filter=1, X, Y) — same trigger as regular switch
+2. If touching AND was NOT touching last frame (edge-triggered):
+     NOT switch_state[switch_id_1]    ← bitwise toggle (0↔0xFF)
+     If switch_id_2 != switch_id_1:
+       NOT switch_state[switch_id_2]  ← toggle second switch too
+3. Save touch state for next frame
+4. Visual tile = 556 + (sw2 & 1) + 2*(sw1 & 1)
+   Tiles 556-559 represent 4 visual states
+   Written to SCREEN MAP (background), not foreground
+```
+
+**Key differences from regular switch (types 6/7):**
+- **Bitwise NOT toggle** instead of set ON/OFF
+- **Two switch IDs** — can control two switches simultaneously
+- **Background tile** (556-559) instead of foreground tile (230/231, 250/251)
+- **Edge-triggered** — only toggles on first contact, not while standing on it
+
+**Python implementation:**
+- Same shape 4 overlap check as regular switches
+- `~self.switch_state[sw1] & 0xFF` for bitwise NOT toggle
+- Draws tile directly to surface (no cache invalidation needed)
+- `obj["touching"]` tracks edge detection
+
+### Level Walkthroughs
+
+#### Level 1 — 4 captives
+```
+START → R0 → R1 → R2 → R3 → R4★ (door:sw17) → R5 → R6 → R7 → R8 (door:sw20)
+                                                                      ↓
+R15 ← R14 ← R13★★ ← R12 ← R11 ← R10 ← R9★ (doors:sw28,sw30) ← R8
+```
+- R4 cage: hit r_switch at R4(13,7) to open door
+- R9 cage: r_switch at R10(13,6) opens left door, r_switch at R11(18,5) opens right door
+- R13: 2 cages, no doors blocking
+
+#### Level 2 — 11 captives
+```
+R0 → R13★ → R12★ → R11★ → R10 → R9 → R8★     (right path, 4 cages)
+R0 → R14 → R15 → R16★ → R17 → R18★ → R19 → R20★ → R21★  (down path, 4 cages)
+R0 → R26★ → R25 → R24★                          (left path, 2 cages)
+R0 → R1 → R2 → R3 → R4 → R5★                   (up path, 1 cage)
+```
+Key switches:
+- R13 door (sw33): l_switch at R13(1,2)
+- R9 doors: sw28 at R10(13,6), sw30 at R11(18,5)
+- R7 door (sw22): r_switch at R6(17,10)
+- R15 door (sw37): l_switch at R14(9,8)
+- R16 top door (sw38): l_switch at R14(13,13)
+- R16 bottom door (sw29): l_switch at R11(11,4)
+- R17 h_field (sw36): l_switch at R14(9,6)
+- R21 door (sw50): l_switch at R21(6,2) or R22(7,7)
+- R25 doors: sw52 at R24(4,5), sw53 at R24(4,7)
+
+#### Level 3 — 15 captives
+```
+R0 → R1★ → R2★ → R3 → R4(tele) → R5(tele maze) → R6★★(toggle,fields)
+                                                      ↓
+R0 ← R8★ ← (tele) ← R7★★(tele) ← R13★(sensor doors) ← R12★★ ← R11 → R21★
+     ↓
+     R9★ → R10(toggle,door,tele) → R3
+     ↓
+     R14(tele) → R15★(tele maze) → R16★★ → R17(tele) ↔ R18 → R1/R2
+```
+Cages: R1, R2, R6×2, R7×2, R8, R9, R12×2, R13, R15, R16×2, R21
+
+Key mechanics:
+- R4, R5, R15: Teleporter mazes
+- R6: 4 toggle switches (all sw6) control h_fields blocking cages
+- R10: 2 toggle switches (sw15) control door; h_field at sw200 is PERMANENT (no switch)
+- R13: 3 sensor switches (sw22,23,24) control 3 doors — walk past to open
+- R7→R8: teleporter chain
+
+### Permanent Hazards (no switch to disable)
+
+| Level | Room | Type | Switch ID | Notes |
+|-------|------|------|-----------|-------|
+| 3 | R10 | h_field | sw200 | No switch exists — permanent barrier |
+
+### Sound Driver Selection (command line)
+
+`GAME.EXE N` where N is:
+- 0 = No sound (default)
+- 1 = Internal PC speaker
+- 2 = Covox Speech Thing
+- 3 = Sound Master II
+
+No command-line level select exists. Levels play in fixed sequence.
+
+### Key Addresses (session 4 continued)
+
+| Address | Description |
+|---------|-------------|
+| 0x213C | Toggle switch handler |
+| 0x2219 | Teleporter handler |
+| 0x1F18 | Beam-out handler (cage disappear forward, frames 0→16) |
+| 0x1FBF | Beam-in handler (cage disappear reverse, frames 15→0) |
+| 0x0C7E | Position Joe at coords (sets gun position, resets fire state) |
+| 0x0BBF | Teleport room change path (bounds check, beam-out, state advance) |
+| 0x0C62 | Teleport arrival path (load room, beam-in) |
+| DS:0x23BA | Room change flag (0=none, 1=teleport pending, 2=beam-out done) |
+| DS:0x23BB | Destination room number |
+| DS:0x23BF | Destination tile location |
+| DS:0x23B9 | Beam completion counter |
+| DS:0x3389 | Cage disappear / beam animation table (17 frames) |
+
 ## FILES TO CLEAN UP
 - test_sprites.png, test_all_sprites.png may exist in python/ directory
 - verify_joe.png may exist in python/ directory
 - /tmp/doswork/ and /tmp/dosjet/ have working copies
+- explosion_sprite_33-38.png in python/ directory

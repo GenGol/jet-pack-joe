@@ -475,6 +475,8 @@ class JetPackJoe:
         self.room_cache = {}
         self.cbm_cache = {}
         self.cbm_backup = {}
+        self.beam_in = None
+        self.beam_out = None
         self.num_rooms = len(self.levels[self.current_level]["map"]) // ROOM_BYTES
         self.load_room_headers()
         self.load_room_objects()
@@ -879,14 +881,149 @@ class JetPackJoe:
                     fg_idx = (row + dr) * MAP_COLS + (col + dc)
                     obj.setdefault("fg_tiles", {})[fg_idx] = ti
                 continue
-            elif ot == 17:  # toggle_switch
-                sp = self.sprites[23]
+            elif ot == 19:  # teleporter — handled in update_objects
+                continue
+                continue
+            elif ot == 17:  # toggle_switch — matching GAME.EXE 0x213C
+                sw1 = obj["params"][1] if len(obj["params"]) > 1 else 0
+                sw2 = obj["params"][2] if len(obj["params"]) > 2 else 0
+                # CHECK_COLLISION shape 4 overlap (same as regular switch)
+                jhx, jhy = int(self.player.x) // 2, int(self.player.y) // 2
+                shx, shy = x // 2, y // 2
+                touching = False
+                for dy, dx_start, count in JOE_COL_SHAPE:
+                    jy = jhy + dy
+                    if jy < shy + 2 or jy > shy + 3:
+                        continue
+                    for i in range(count):
+                        jx = jhx + dx_start + i
+                        if shx + 2 <= jx <= shx + 5:
+                            touching = True
+                            break
+                    if touching:
+                        break
+                # Edge-triggered: toggle only on first contact
+                if touching and not obj.get("touching"):
+                    self.switch_state[sw1] = ~self.switch_state[sw1] & 0xFF
+                    if sw2 != sw1:
+                        self.switch_state[sw2] = ~self.switch_state[sw2] & 0xFF
+                obj["touching"] = touching
+                # Visual: tile 556 + (sw2 & 1) + 2*(sw1 & 1), written to background
+                ti = 556 + (self.switch_state[sw2] & 1) + 2 * (self.switch_state[sw1] & 1)
+                loc = obj["params"][0]
+                col_t = loc % MAP_COLS
+                row_t = loc // MAP_COLS
+                surface.blit(self.tile_surfs[ti], (col_t * TILE_W, row_t * TILE_H))
+                sp = None
             elif ot == 14:  # sentry — sprites 29-32
                 sp = self.sprites[29 + (obj["timer"] // 8) % 4]
             elif ot == 13:  # glow_ball — sprites 35-37
                 sp = self.sprites[35 + (obj["timer"] // 8) % 3]
             if sp:
                 surface.blit(sp["surf"], (x + sp["x_off"], y + sp["y_off"]))
+        # Beam-out/beam-in animation (cage disappear frames, DS:0x3389)
+        BEAM_FRAMES = [
+            [(0,0),(1,213),(2,0),(20,0),(21,213),(22,0),(40,0),(41,213),(42,0)],
+            [(0,0),(1,214),(2,0),(20,0),(21,214),(22,0),(40,0),(41,214),(42,0)],
+            [(0,0),(1,215),(2,0),(20,0),(21,215),(22,0),(40,0),(41,215),(42,0)],
+            [(0,234),(1,214),(2,235),(20,234),(21,214),(22,235),(40,234),(41,214),(42,235)],
+            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
+            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
+            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
+            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
+            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
+            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
+            [(0,217),(1,217),(2,217),(20,217),(21,217),(22,217),(40,217),(41,217),(42,217)],
+            [(0,218),(1,218),(2,218),(20,218),(21,218),(22,218),(40,218),(41,218),(42,218)],
+            [(0,236),(1,236),(2,236),(20,218),(21,218),(22,218),(40,237),(41,237),(42,237)],
+            [(0,238),(1,238),(2,238),(20,218),(21,218),(22,218),(40,239),(41,239),(42,239)],
+            [(0,0),(1,0),(2,0),(20,218),(21,218),(22,218),(40,0),(41,0),(42,0)],
+            [(0,0),(1,0),(2,0),(20,219),(21,219),(22,219),(40,0),(41,0),(42,0)],
+            [(0,0),(1,0),(2,0),(20,0),(21,0),(22,0),(40,0),(41,0),(42,0)],
+        ]
+        active_beam = self.beam_out or self.beam_in
+        if active_beam is not None:
+            f = active_beam["frame"]
+            if 0 <= f <= 16:
+                tile_loc = active_beam["tile"]
+                col = tile_loc % MAP_COLS
+                row = tile_loc // MAP_COLS
+                for toff, ti in BEAM_FRAMES[f]:
+                    if ti == 0:
+                        continue
+                    dc, dr = toff % 20, toff // 20
+                    px = (col + dc) * TILE_W
+                    py = (row + dr) * TILE_H
+                    surface.blit(self.tile_surfs[ti], (px, py))
+            active_beam["timer"] += 1
+            if active_beam["timer"] >= 4:
+                active_beam["timer"] = 0
+                if self.beam_out is not None:
+                    # Beam-out: frames 0→16 (forward), Joe hidden at frame 12
+                    self.beam_out["frame"] += 1
+                    if self.beam_out["frame"] > 16:
+                        # Beam-out done → teleport Joe → start beam-in
+                        bo = self.beam_out
+                        dest_room = bo["dest_room"]
+                        dest_tile = bo["dest_tile"]
+                        dcol = dest_tile % MAP_COLS
+                        drow = dest_tile // MAP_COLS
+                        self.player.x = dcol * TILE_W + 23
+                        self.player.y = drow * TILE_H + 16
+                        self.player.vx = 0
+                        self.player.vy = 0
+                        if dest_room != self.current_room:
+                            self.current_room = dest_room
+                            self.player.shots.clear()
+                            self.player.explosions.clear()
+                        self.cbm_cache.pop(self.current_room, None)
+                        self.cbm_backup.pop(self.current_room, None)
+                        for other in self.room_objects.get(self.current_room, []):
+                            if other["type"] == 19:
+                                other["armed"] = False
+                        self.beam_out = None
+                        self.beam_in = {"tile": dest_tile, "frame": 15, "timer": 0}
+                else:
+                    # Beam-in: frames 15→0 (reverse)
+                    self.beam_in["frame"] -= 1
+                    if self.beam_in["frame"] < 0:
+                        self.beam_in = None
+
+    def update_objects(self):
+        """Update objects that affect gameplay (teleporters). Called during update phase."""
+        room_idx = self.current_room
+        if room_idx not in self.room_objects:
+            return
+        px, py = int(self.player.x), int(self.player.y)
+        for obj in self.room_objects[room_idx]:
+            if obj["type"] == 19:  # teleporter — matching GAME.EXE 0x2219
+                x, y = obj["x"], obj["y"]
+                # Teleporter center (where trigger is): x+16, y+12
+                cx, cy = x + 16, y + 12
+                dx, dy = abs(px - cx), abs(py - cy)
+                # Inner trigger: Joe center within ~10px of teleporter center
+                inner = dx < 10 and dy < 8
+                # Outer boundary: Joe within the full teleporter area
+                outer_left = abs(px - (x + 2)) < 14
+                outer_right = abs(px - (x + 42)) < 14
+                outer_y = y - 4 < py < y + 40
+                on_boundary = (outer_left or outer_right) and outer_y
+                if not inner:
+                    obj["armed"] = not on_boundary
+                elif not on_boundary and obj.get("armed", True):
+                    obj["armed"] = True
+                    dest_room = obj["params"][1] if len(obj["params"]) > 1 else 0
+                    dest_tile = obj["params"][2] if len(obj["params"]) > 2 else 0
+                    # Start beam-out at source, then beam-in at destination
+                    src_tile = obj["params"][0]
+                    self.beam_out = {"tile": src_tile, "frame": 0, "timer": 0,
+                                     "dest_room": dest_room, "dest_tile": dest_tile,
+                                     "src_room": room_idx}
+                    # Disarm all teleporters in current room
+                    for other in self.room_objects.get(room_idx, []):
+                        if other["type"] == 19:
+                            other["armed"] = False
+                    return
 
     def try_room_transition(self):
         """Check if player has left the screen and transition rooms.
@@ -987,19 +1124,22 @@ class JetPackJoe:
                         print(f"Saved {fname}")
 
             if not self.game_over:
+                beaming = self.beam_out is not None or self.beam_in is not None
                 keys = pygame.key.get_pressed()
-                self.player.vx = 0
-                if keys[pygame.K_LEFT]:
-                    self.player.vx = -MOVE_SPEED
-                    self.player.direction = -1
-                if keys[pygame.K_RIGHT]:
-                    self.player.vx = MOVE_SPEED
-                    self.player.direction = 1
-                self.player.thrusting = keys[pygame.K_SPACE] or keys[pygame.K_UP]
+                if not beaming:
+                    self.player.vx = 0
+                    if keys[pygame.K_LEFT]:
+                        self.player.vx = -MOVE_SPEED
+                        self.player.direction = -1
+                    if keys[pygame.K_RIGHT]:
+                        self.player.vx = MOVE_SPEED
+                        self.player.direction = 1
+                    self.player.thrusting = keys[pygame.K_SPACE] or keys[pygame.K_UP]
                 if keys[pygame.K_z]:
                     self.player.fire()
                 cbm, pipe_floors, pipe_ceilings = self.get_collision_bitmap(self.current_room)
                 self.player.update(cbm, self.sprites, pipe_floors, pipe_ceilings)
+                self.update_objects()
                 self.try_room_transition()
                 if self.player.y > SCREEN_H:
                     self.player.lives -= 1
@@ -1024,7 +1164,13 @@ class JetPackJoe:
         self.screen.blit(self.render_room(self.current_room), (0, 0))
         self.draw_objects(self.screen, self.current_room)
         if not self.game_over:
-            self.player.draw(self.screen, self.sprites)
+            joe_hidden = False
+            if self.beam_out and self.beam_out["frame"] >= 12:
+                joe_hidden = True
+            if self.beam_in and self.beam_in["frame"] > 12:
+                joe_hidden = True
+            if not joe_hidden:
+                self.player.draw(self.screen, self.sprites)
         self.render_foreground(self.current_room, self.screen)
         # Draw explosions on top of everything (they occur at wall edges)
         if not self.game_over:
