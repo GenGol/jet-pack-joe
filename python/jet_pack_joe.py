@@ -474,6 +474,7 @@ class JetPackJoe:
             sp["mask"] = mask
         self.room_cache = {}
         self.cbm_cache = {}
+        self.cbm_backup = {}
         self.num_rooms = len(self.levels[self.current_level]["map"]) // ROOM_BYTES
         self.load_room_headers()
         self.load_room_objects()
@@ -514,6 +515,8 @@ class JetPackJoe:
                                 bx, by = hx + c, hy + r
                                 if 0 <= bx < HALF_W and 0 <= by < HALF_H:
                                     cbm[by * HALF_W + bx] = 1
+            # Backup bitmap for DRAW_VISUAL erase (matches original 0x4820)
+            self.cbm_backup[room_idx] = bytearray(cbm)
         return self.cbm_cache[room_idx]
 
     def is_solid(self, col, row):
@@ -838,39 +841,36 @@ class JetPackJoe:
                 ]
                 switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
                 var_id = obj["params"][2] if len(obj["params"]) > 2 else 0
-                state = min(14, self.switch_state[var_id])
-                if self.switch_state[switch_id]:
-                    if state < 14:
-                        state += 1
-                else:
-                    if state > 0:
-                        state -= 1
-                self.switch_state[var_id] = state
-                # Update collision bitmap: shape 3 (6w×21h, alternating rows)
-                # Door position: base + (2,4) centered, shifted up by 3*state
+                old_state = min(14, self.switch_state[var_id])
+                # DRAW_VISUAL: erase old collision (restore from backup)
                 cbm = self.get_collision_bitmap(room_idx)[0]
-                hx = (x + 2) // 2  # +2 from init offset, half-res
-                hy = (y + 4) // 2  # +4 from init offset, half-res
-                # Clear old door collision (write 0) then draw new
-                for r in range(0, 21, 2):  # alternating rows
-                    for c in range(6):
-                        # Clear full range
-                        for s in range(15):
-                            by = hy - (s * 3) // 2 + r
+                backup = self.cbm_backup.get(room_idx)
+                hx = (x + 2) // 2
+                old_shift = (old_state * 3) // 2
+                if backup:
+                    for r in range(0, 21, 2):
+                        by = (y + 4) // 2 - old_shift + r
+                        for c in range(6):
                             bx = hx + c
                             if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                                if cbm[by * HALF_W + bx] == 1:
-                                    pass  # don't clear wall tiles
-                                elif cbm[by * HALF_W + bx] == 2:
-                                    cbm[by * HALF_W + bx] = 0
-                # Draw at new position
-                y_shift = (state * 3) // 2  # half-res shift
+                                cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
+                # Update state
+                if self.switch_state[switch_id]:
+                    if old_state < 14:
+                        old_state += 1
+                else:
+                    if old_state > 0:
+                        old_state -= 1
+                self.switch_state[var_id] = old_state
+                state = old_state
+                # DRAW_COLLISION: write new collision (type 1)
+                new_shift = (state * 3) // 2
                 for r in range(0, 21, 2):
+                    by = (y + 4) // 2 - new_shift + r
                     for c in range(6):
                         bx = hx + c
-                        by = hy - y_shift + r
                         if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                            cbm[by * HALF_W + bx] = 2  # door collision type
+                            cbm[by * HALF_W + bx] = 1
                 # Update foreground tiles
                 col = obj["params"][0] % MAP_COLS
                 row = obj["params"][0] // MAP_COLS
@@ -954,6 +954,7 @@ class JetPackJoe:
             self.player = Player(160, 120)
             self.game_over = False
             self.cbm_cache = {}
+            self.cbm_backup = {}
 
     def run(self):
         running = True

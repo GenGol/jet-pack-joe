@@ -880,7 +880,8 @@ Located in debug section starting around 0x10A8E:
   - fan_1/fan_2 (pink/grey): fg layer fans, drawn after Joe (colorkey)
 - **Door (type 5)** — sliding vertical barrier, 15-state tile animation ✓
   - Controlled by switch_state[switch_id], position in switch_state[var_id]
-  - Dynamic collision wall moves with door (SH00.DAT shape 3)
+  - Dynamic collision wall moves with door (SH00.DAT shape 3) ✓
+  - Collision uses backup bitmap erase/write (matching original DRAW_VISUAL/DRAW_COLLISION)
 - **Switch state initialization** from level data trailer ✓
   - All states start 0xFF, then specific IDs set to 0 from switch-off list
   - Level 1: switches 17,18,20,21,22,23,25,26 start OFF
@@ -927,7 +928,7 @@ Located in debug section starting around 0x10A8E:
      - Gun offset: ±12 X, +2 Y from player position
    - **Not yet implemented**: horiz_field (9), generators (11/12/20),
      teleporter (19), sensor_switch (18), plates (15/16), toggle_switch (17)
-   - **Not yet implemented gameplay**: field killing Joe, enemy AI, door blocking,
+   - **Not yet implemented gameplay**: field killing Joe, enemy AI,
      muzzle flash animation (cosmetic, low priority)
 
 ## SESSION 3 FIXES (2026-04-19)
@@ -1679,6 +1680,279 @@ The EXE has a 512-byte (0x200) MZ header. Code starts at file offset 0x200.
 9. **Cutscene animations** — title, death, thumbs up, credits (ANIM.ASM)
 10. **Enemy collision shapes** — SH00.DAT decoded for Joe (entry 0), need to trace other entries for sentries/birds/balls
 11. **Display set effects** — DS00.DAT (38928 bytes), fade tables and palette effects
+
+## SESSION 4 CONTINUED: DOOR COLLISION SYSTEM (2026-04-20)
+
+### Fix 14: Door blocking Joe's movement (collision wall moves with door)
+
+**Problem:** Doors had visual tile animation but no working collision. Joe could walk
+through closed doors. The old code attempted collision with a type-2 marker system
+that tried to avoid clearing wall tiles, but it was fragile and incorrect.
+
+**Solution:** Reverse-engineered the exact DRAW_COLLISION and DRAW_VISUAL functions
+from GAME.EXE and implemented the backup bitmap mechanism.
+
+### Collision Bitmap Architecture (from GAME.EXE)
+
+The original game maintains TWO copies of the collision bitmap:
+
+| Bitmap | Offset in ES | Size | Purpose |
+|--------|-------------|------|---------|
+| Active | ES:0x0000 | 192×96 = 18432 bytes | Current collision state, modified by objects |
+| Backup | ES:0x4820 | 192×96 = 18432 bytes | Original tile collision, never modified |
+
+The backup is created at room load by copying the active bitmap (0x2E80).
+Objects that need to write/erase collision (doors, cages) use these two functions:
+
+#### DRAW_COLLISION (0x045A → 0x2ED8) — Write collision to bitmap
+
+Called by door handler to place the door's collision wall.
+
+```
+Entry: AX = SH00.DAT shape index
+       BL = collision type value to write (1 for solid)
+       CX = object X (centered coords, -160 to +160)
+       DX = object Y (centered coords, -96 to +96)
+
+0x045A wrapper:
+  CX += 160 (0xA0)     ; convert to screen coords
+  DX += 96 (0x60)
+  SAR CX, 1            ; convert to half-res
+  SAR DX, 1
+
+0x2ED8 core:
+  SI = SH00.DAT offset table[AX * 2] + 0x9D40  ; shape data pointer
+  CX += 32 (0x20)      ; add left padding (192-wide bitmap has 32 cols padding)
+  DI = DX * 192 + CX   ; starting position in bitmap
+
+  Loop:
+    LODSW → delta       ; signed 16-bit offset
+    DI += delta          ; advance position
+    LODSB → count        ; number of bytes to write
+    if count == 0: break ; end of shape
+    if DI > 0x47FF: DI += count; continue  ; bounds check
+    REP STOSB (AL=BL)   ; fill count bytes with collision type
+```
+
+#### DRAW_VISUAL (0x0473 → 0x2F8A) — Erase collision from bitmap
+
+Called by door handler to remove the old collision wall before writing the new one.
+**Restores from the backup bitmap** — this is the key insight.
+
+```
+Entry: Same as DRAW_COLLISION (AX=shape, CX=X, DX=Y)
+
+0x2F8A core:
+  Same coordinate setup as DRAW_COLLISION.
+
+  Loop:
+    LODSW → delta
+    DI += delta
+    LODSB → count
+    if count == 0: break
+    if DI > 0x47FF: DI += count; continue
+    Copy count bytes from [DI + 0x4820] to [DI]  ; restore from backup!
+```
+
+This is why the erase never damages wall tiles — it restores whatever was originally
+there (walls stay as walls, empty stays as empty).
+
+#### Our Python Implementation
+
+```python
+# In get_collision_bitmap(): after building cbm, save backup
+self.cbm_backup[room_idx] = bytearray(cbm)
+
+# In door update (draw_objects):
+# Step 1: DRAW_VISUAL — erase old collision (restore from backup)
+for r in range(0, 21, 2):  # shape 3: alternating rows
+    by = (y + 4) // 2 - old_shift + r
+    for c in range(6):
+        bx = hx + c
+        cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]  # restore
+
+# Step 2: Update state (increment/decrement based on switch)
+
+# Step 3: DRAW_COLLISION — write new collision (type 1)
+for r in range(0, 21, 2):
+    by = (y + 4) // 2 - new_shift + r
+    for c in range(6):
+        bx = hx + c
+        cbm[by * HALF_W + bx] = 1  # solid
+```
+
+**Critical difference from old code:** The old code used collision type 2 as a marker
+and tried to skip type 1 (walls) during clearing. This was fragile — if a door
+collision overlapped a wall tile, the wall would be permanently damaged. The backup
+approach is robust: it always restores the correct original value.
+
+### Door Handler (0x1C51) — Complete Disassembly
+
+**Init (AX=0 at 0x1C73):**
+```
+[DI+0x08] = 0x59 (89) — tick interval (89/20 ≈ 4.5 frames between updates)
+[DI+0x04] = random(INT 62h DX=0xB) + [0x3065] — next update time
+[DI+0x06] = 0x1C51 — self handler
+[DI+0x0A] = READ_WORD — tile location (for MODIFY_FOREGROUND_MAP)
+BLOCK_TO_XY(location) → CX, DX
+CX += 2, DX += 4 — door position offset
+[DI+0x10] = CX — door X (centered coords)
+[DI+0x12] = DX — door Y (centered coords)
+[DI+0x1E] = READ_WORD — switch_id (which switch controls this door)
+[DI+0x1F] = READ_WORD — var_id (switch_state index holding door position 0-14)
+Immediately calls self with AX=2 (first update to set initial collision)
+```
+
+**Update (AX=2 at 0x1CCF):**
+```
+1. BL = var_id, AL = switch_state[var_id], clamp to 0-14
+2. CX = door_X, DX = door_Y - old_state * 3
+   CALL DRAW_VISUAL(shape=3) — erase old collision
+3. Check switch_state[switch_id]:
+   - If ON (≠0) and state < 14: increment state (door opens, slides UP)
+   - If OFF (=0) and state > 0: decrement state (door closes, slides DOWN)
+4. CX = door_X, DX = door_Y - new_state * 3
+   CALL DRAW_COLLISION(shape=3, type=1) — write new collision
+5. CALL MODIFY_FOREGROUND_MAP(location, table=0x3599) — update tiles
+```
+
+**Y position formula:** `door_Y - state * 3` (full-res centered coords)
+- State 0 (closed): collision at door_Y (bottom position)
+- State 14 (open): collision at door_Y - 42 (shifted 42px up, above the passage)
+- In half-res: shift = `(state * 3) // 2` pixels
+
+### SH00.DAT Shape 3 (Door Collision)
+
+```
+6 wide × 21 tall (half-res), alternating filled/empty rows:
+Row  0: ######
+Row  1: ......
+Row  2: ######
+Row  3: ......
+Row  4: ######
+...
+Row 18: ######
+Row 19: ......
+Row 20: ######
+
+11 filled rows at even positions (0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20)
+Each row is 6 bytes wide
+```
+
+The alternating pattern creates a "venetian blind" collision that still blocks
+Joe's 14×15 half-res collision shape (Joe can't fit through the 1-pixel gaps).
+
+### Door Timing
+
+- `[DI+8] = 0x59 (89)` tick interval
+- At 1165 Hz counter rate: 89/1165 = 0.076 seconds between state changes
+- 15 states (0-14) × 0.076 = **1.15 seconds** to fully open/close
+- Python: door updates every `draw_objects` call (once per frame at 60fps)
+  - State changes once per call, so 15/60 = 0.25 seconds
+  - This is faster than original but acceptable since the door is visually smooth
+  - To match exactly: only change state every ~5 frames (89/20 ≈ 4.5)
+
+### Door Instances (Level 1)
+
+| Room | Location | Tile | switch_id | var_id | Controls |
+|------|----------|------|-----------|--------|----------|
+| 4 | 26 | (6,1) | 17 | 18 | Right switch in room 4 |
+| 8 | 42 | (2,2) | 20 | 21 | Right switch in room 8 |
+| 9 | 51 | (11,2) | 22 | 23 | Left switch in room 9 |
+| 9 | 22 | (2,1) | 25 | 26 | Right switch in room 9 |
+
+All start closed (switch_state[var_id] = 0 from level trailer switch-off list).
+
+### Collision Bitmap Coordinate Systems
+
+This is a common source of bugs. There are THREE coordinate systems:
+
+| System | Range | Used by | Conversion |
+|--------|-------|---------|------------|
+| Centered | X: -160..+160, Y: -96..+96 | GAME.EXE internally, object positions | +160, +96 → screen |
+| Screen | X: 0..319, Y: 0..191 | Python obj["x"]/obj["y"], rendering | ÷2 → half-res |
+| Half-res | X: 0..159, Y: 0..95 | Collision bitmap (160×96) | Direct index |
+
+**GAME.EXE collision functions** (0x045A, 0x0473, 0x048C) convert centered → half-res:
+```
+CX += 160    ; centered → screen
+DX += 96
+SAR CX, 1    ; screen → half-res
+SAR DX, 1
+; Then internally: CX += 32 (192-wide bitmap padding)
+; DI = DX * 192 + CX
+```
+
+**Our Python** uses screen coords directly:
+```python
+hx = (screen_x + offset_x) // 2   # screen → half-res
+hy = (screen_y + offset_y) // 2
+idx = hy * HALF_W + hx             # HALF_W = 160 (no padding)
+```
+
+**No padding in Python:** The original uses a 192-wide bitmap with 32 columns of
+left padding. Our Python uses 160-wide with no padding. This means we DON'T add
+the +32 offset. The SH00.DAT scan deltas are designed for stride 192, but since
+we decode them into (row, col) tuples, the stride difference doesn't matter.
+
+### Pattern for Future Object Collision (template)
+
+Any object that needs dynamic collision (enemies, plates, etc.) should follow this pattern:
+
+```python
+# 1. Ensure cbm_backup exists (created in get_collision_bitmap)
+backup = self.cbm_backup.get(room_idx)
+
+# 2. Decode the SH00.DAT shape once (can cache)
+# Shape N scans: list of (row_offset, col_offset, width)
+
+# 3. ERASE old collision (restore from backup)
+for row_off, col_off, width in shape_scans:
+    by = base_hy - old_shift + row_off
+    for c in range(width):
+        bx = base_hx + col_off + c
+        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+            cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
+
+# 4. WRITE new collision
+for row_off, col_off, width in shape_scans:
+    by = base_hy - new_shift + row_off
+    for c in range(width):
+        bx = base_hx + col_off + c
+        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+            cbm[by * HALF_W + bx] = collision_type  # usually 1
+```
+
+### Debugging Collision Issues
+
+**Print the collision bitmap around an object:**
+```python
+cbm = self.get_collision_bitmap(room_idx)[0]
+hx, hy = obj["x"] // 2, obj["y"] // 2
+for row in range(hy - 5, hy + 25):
+    line = f'Row {row:3d}: '
+    for col in range(hx - 2, hx + 10):
+        if 0 <= col < HALF_W and 0 <= row < HALF_H:
+            v = cbm[row * HALF_W + col]
+            line += str(v) if v else '.'
+        else:
+            line += '?'
+    print(line)
+```
+
+**Verify backup exists:**
+```python
+backup = self.cbm_backup.get(room_idx)
+assert backup is not None, f"No backup for room {room_idx}"
+assert len(backup) == HALF_W * HALF_H
+```
+
+**Common bugs:**
+1. **Forgetting to erase before write** → collision accumulates, passage never opens
+2. **Using wrong coordinate system** → collision appears in wrong place
+3. **List replacement vs slice assignment** → shared references break (see Shot/Explosion bug)
+4. **Not clamping state** → array index out of bounds
+5. **Modifying backup** → erase restores wrong values (backup must be immutable after creation)
 
 ## FILES TO CLEAN UP
 - test_sprites.png, test_all_sprites.png may exist in python/ directory
