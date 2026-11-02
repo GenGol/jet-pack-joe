@@ -89,6 +89,46 @@ def test_cage_stays_open_after_leaving_and_returning_by_teleporter():
     assert g.death is None and g.player.x < cage["x"] - 8, f"Joe stuck at x={int(g.player.x)}"
 
 
+def test_every_cage_in_the_game_opens_and_stays_open_after_reload():
+    """Rescue all 30 captives; after the room reload a teleporter causes, the four wall columns
+    must be gone and the cage interior must have room for Joe."""
+    failures = []
+    for lvl in range(3):
+        d = Driver()
+        g = d.g
+        g.set_level(lvl)
+        keys = [(r, i) for r, objs in sorted(g.room_objects.items()) for i, o in enumerate(objs) if o["type"] == 10]
+        for room, idx in keys:
+            g.set_level(lvl)
+            g.enemies_enabled = False
+            cage = g.room_objects[room][idx]
+            g.jump_to_room(room)
+            d.run(2)
+            g.player.time = 9999
+            d.place(cage["x"] + 23, cage["y"] + 40, radius=60)
+            d.run(90, until=lambda g: cage.get("disappear", -1) >= 0)
+            d.run(150, until=lambda g: cage.get("done"))
+            if not cage.get("done"):
+                failures.append((lvl + 1, room, "rescue did not complete"))
+                continue
+            g.cbm_cache.pop(room, None)
+            g.cbm_backup.pop(room, None)
+            g.last_room = None
+            g.joe_marked = None
+            g.player.x, g.player.y = 8.0, 8.0          # keep Joe's own marker out of the probe
+            d.run(3)
+            cbm = g.get_collision_bitmap(room)[0]
+            hx, hy = cage["x"] // 2, cage["y"] // 2
+            walls = sum(cbm[(hy + r) * J.HALF_W + hx + c] for r in range(18) for c in (1, 2, 21, 22)
+                        if 0 <= hy + r < J.HALF_H and 0 <= hx + c < J.HALF_W)
+            free = any(not J.joe_hits_bg(cbm, cx, cy)
+                       for cy in range(cage["y"] + 8, cage["y"] + 34, 2)
+                       for cx in range(cage["x"] + 8, cage["x"] + 40, 2))
+            if walls or not free:
+                failures.append((lvl + 1, room, f"walls={walls} interior_free={free}"))
+    assert not failures, failures
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 if __name__ == "__main__":
