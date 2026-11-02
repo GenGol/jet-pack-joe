@@ -2994,3 +2994,12 @@ by `draw_entities`. From handler 0x2061:
   into its sw1 and **closes the door to the pad's left**, i.e. the one Joe just came through.
 - Tests: `python3 python/tests/test_switches.py` (spawn/tiles, variable copy + door closes +
   tile returns, pad drawn on screen). All three suites pass (9 + 7 + 3).
+
+
+### Debug navigation (2026-11-01)
+- **G** then a room number then **Enter** jumps to that room in the current level (Esc cancels;
+  the status bar shows the digits). **[** and **]** step rooms. **1/2/3** pick a level.
+- `python3 jet_pack_joe.py --start 3:13` launches straight into level 3 room 13 (the sound
+  driver number, if given, goes first: `python3 jet_pack_joe.py 0 --start 3:13`).
+- All of these go through `JetPackJoe.jump_to_room`, which drops Joe on the nearest free spot
+  so he never starts inside a wall; `tests/test_goto.py` checks every room of every level.

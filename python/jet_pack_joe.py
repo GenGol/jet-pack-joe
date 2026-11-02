@@ -1127,6 +1127,7 @@ class JetPackJoe:
         self.joe_marked = None   # the cbm Joe's type-14 marker is currently stamped in
         self.death = None        # Joe death animation state (GAME.EXE 0x0F05)
         self.cbm = self.cbm_bak = None
+        self.goto_buf = None     # digits typed after G (debug "go to room"), None when inactive
         self.set_level(0)
 
     def build_assets(self):
@@ -1954,6 +1955,36 @@ class JetPackJoe:
     # ------------------------------------------------------------------
     # Room entry, enemy scheduling, Joe's collision marker and death
     # ------------------------------------------------------------------
+    def jump_to_room(self, room):
+        """Debug helper (G key, [ ], --start): switch rooms without a door and drop Joe on the
+        nearest free spot so he does not start inside a wall or a pit."""
+        if not 0 <= room < self.num_rooms:
+            return False
+        self.current_room = room
+        self.beam_in = self.beam_out = None
+        self.death = None
+        self.player.shots.clear()
+        self.player.explosions.clear()
+        cbm = self.get_collision_bitmap(room)[0]
+        px, py = int(self.player.x), int(self.player.y)
+        py = max(16, min(py, SCREEN_H - 48))
+        best = None
+        for radius in range(0, 200, 2):
+            for dx in range(-radius, radius + 1, 2):
+                for dy in (-radius, radius) if radius else (0,):
+                    for cx, cy in ((px + dx, py + dy), (px + dy, py + dx)):
+                        if 8 <= cx < SCREEN_W - 8 and 8 <= cy < SCREEN_H - 40 and not joe_hits_bg(cbm, cx, cy):
+                            dist = (cx - px) ** 2 + (cy - py) ** 2
+                            if best is None or dist < best[0]:
+                                best = (dist, cx, cy)
+            if best is not None:
+                break
+        if best is not None:
+            self.player.x, self.player.y = float(best[1]), float(best[2])
+        self.player.vx = self.player.vy = 0.0
+        self.joe_marked = None
+        return True
+
     def enter_room(self):
         """Called whenever current_room changes. The original (0x0802) destroys every object of
         the old room and re-runs the init handlers of the new room's object list, so enemies and
@@ -2162,6 +2193,18 @@ class JetPackJoe:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                elif event.type == pygame.KEYDOWN and self.goto_buf is not None:
+                    # G mode: type a room number, Enter jumps, Esc cancels
+                    if event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                        if self.goto_buf:
+                            self.jump_to_room(int(self.goto_buf))
+                        self.goto_buf = None
+                    elif event.key == pygame.K_ESCAPE:
+                        self.goto_buf = None
+                    elif event.key == pygame.K_BACKSPACE:
+                        self.goto_buf = self.goto_buf[:-1]
+                    elif event.unicode.isdigit() and len(self.goto_buf) < 2:
+                        self.goto_buf += event.unicode
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
@@ -2169,13 +2212,13 @@ class JetPackJoe:
                         self.set_level(self.current_level)
                         self.game_over = False
                     elif event.key == pygame.K_RIGHTBRACKET:
-                        if self.current_room + 1 < self.num_rooms:
-                            self.current_room += 1
+                        self.jump_to_room(self.current_room + 1)
                     elif event.key == pygame.K_LEFTBRACKET:
-                        if self.current_room > 0:
-                            self.current_room -= 1
+                        self.jump_to_room(self.current_room - 1)
                     elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
                         self.set_level(event.key - pygame.K_1)
+                    elif event.key == pygame.K_g:
+                        self.goto_buf = ""
                     elif event.key == pygame.K_t:
                         self.set_level(1)
                         self.current_room = 18
@@ -2298,7 +2341,10 @@ class JetPackJoe:
         bar_y = SCREEN_H
         pygame.draw.rect(self.screen, (0, 0, 0), (0, bar_y, SCREEN_W, STATUS_H))
         self.screen.blit(self.font.render(f"TIME: {self.player.time:03d}", False, (0, 255, 0)), (4, bar_y + 3))
-        self.screen.blit(self.font.render(f"Rescues Remaining: {self.captive_count:02d}", False, (0, 255, 0)), (SCREEN_W // 2 - 66, bar_y + 3))
+        if self.goto_buf is not None:
+            self.screen.blit(self.font.render(f"GO TO ROOM: {self.goto_buf}_  (Enter / Esc)", False, (255, 255, 0)), (SCREEN_W // 2 - 90, bar_y + 3))
+        else:
+            self.screen.blit(self.font.render(f"Rescues Remaining: {self.captive_count:02d}", False, (0, 255, 0)), (SCREEN_W // 2 - 66, bar_y + 3))
         self.screen.blit(self.font.render(f"ROOM: {self.current_room:02d}", False, (0, 255, 0)), (SCREEN_W - 60, bar_y + 3))
 
         if self.game_over:
@@ -2311,6 +2357,26 @@ class JetPackJoe:
         pygame.transform.scale(self.screen, (WIN_W, WIN_H), self.window)
 
 
+def parse_start_arg(argv):
+    """`--start L:R` (level 1-3, room number) → (level_index, room) or None."""
+    for i, a in enumerate(argv):
+        spec = None
+        if a.startswith("--start="):
+            spec = a.split("=", 1)[1]
+        elif a == "--start" and i + 1 < len(argv):
+            spec = argv[i + 1]
+        if spec:
+            lvl, _, room = spec.partition(":")
+            if lvl.isdigit() and room.isdigit() and 1 <= int(lvl) <= 3:
+                return int(lvl) - 1, int(room)
+            raise SystemExit(f"bad --start {spec!r}: use LEVEL:ROOM, e.g. --start 3:13")
+    return None
+
+
 if __name__ == "__main__":
     game = JetPackJoe()
+    start = parse_start_arg(sys.argv)
+    if start:
+        game.set_level(start[0])
+        game.jump_to_room(start[1])
     game.run()
