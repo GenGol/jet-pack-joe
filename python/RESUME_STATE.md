@@ -3031,3 +3031,9 @@ the `armed` keys and the arrival disarm loop are gone. Tests: `tests/test_telepo
 (walk-in from each side fires, drop onto the centre does not, no bounce-back after arrival,
 return trip after stepping off through a side). Harness note: `Driver.run(n)` now runs
 exactly n frames (it used to run n+1).
+
+- Follow-up (same day): leaving L3 R13 by teleporter and coming back re-created the rescued
+  cage's walls, because the room reload rebuilds the collision bitmap and stamped walls for
+  every type-10 object. `get_collision_bitmap` now skips cages whose rescue has started
+  (`disappear >= 0`), matching the original where a rescued captive's init sees its variable
+  cleared and stays inactive. Test: round trip through the teleporter in `tests/test_cage.py`.

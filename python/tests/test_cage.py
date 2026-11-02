@@ -59,6 +59,36 @@ def test_cage_walls_survive_a_restore_while_active():
     assert cbm[(hy + 5) * J.HALF_W + hx + 1] == 1, "active cage should rewrite its walls"
 
 
+def test_cage_stays_open_after_leaving_and_returning_by_teleporter():
+    d = Driver()
+    g = d.g
+    g.enemies_enabled = False
+    g.set_level(2)
+    g.jump_to_room(13)
+    d.run(2)
+    cage = rescue(d, 13)
+    # Out through the pedestal teleporter to room 14 and straight back.
+    d.place(244, 138)
+    d.run(8)
+    d.run(90, keys={"right"}, until=lambda g: g.beam_out is not None)
+    d.run(300, until=lambda g: g.current_room == 14 and g.beam_in is None)
+    assert g.current_room == 14
+    d.run(14, keys={"left"})
+    d.run(8)
+    d.run(120, keys={"right"}, until=lambda g: g.beam_out is not None)
+    d.run(300, until=lambda g: g.current_room == 13 and g.beam_in is None)
+    assert g.current_room == 13, "did not get back to room 13"
+    cbm = g.get_collision_bitmap(13)[0]
+    hx, hy = cage["x"] // 2, cage["y"] // 2
+    walls = [(hy + r) * J.HALF_W + hx + c for r in range(18) for c in (1, 2, 21, 22)]
+    d.run(3)
+    assert not any(cbm[i] for i in walls), "cage walls came back after the room reload"
+    # And Joe can actually walk into the cage.
+    d.place(cage["x"] + 36, cage["y"] + 20)
+    d.run(120, keys={"left"}, until=lambda g: g.player.x < cage["x"] - 8 or g.death is not None)
+    assert g.death is None and g.player.x < cage["x"] - 8, f"Joe stuck at x={int(g.player.x)}"
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 if __name__ == "__main__":

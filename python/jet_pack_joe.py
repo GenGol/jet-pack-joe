@@ -1227,7 +1227,7 @@ class JetPackJoe:
             # Add cage collision walls (shape 13: two 2px walls, 18 rows tall)
             if room_idx in self.room_objects:
                 for obj in self.room_objects[room_idx]:
-                    if obj["type"] == 10:
+                    if obj["type"] == 10 and obj.get("disappear", -1) < 0:   # rescued → no walls
                         hx, hy = obj["x"] // 2, obj["y"] // 2
                         for r in range(18):
                             for c in [1, 2, 21, 22]:  # left wall cols 1-2, right wall cols 21-22
