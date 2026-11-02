@@ -109,7 +109,7 @@ A faithful recreation of the classic Atari Missile Command arcade game.
 - Warhead splitting at a configurable altitude ("split deck")
 - Expanding/contracting explosion clouds (circle-based)
 - Score tracking with bonus city awards
-- Sound effects via PC speaker (tones, clicks)
+- Sound effects: five digitised samples (DS00.DAT, 6-bit, 9321.7 Hz) mixed on 4 channels and played through the PC speaker (pulse-width) or a Covox DAC
 - Task-based game loop (cooperative multitasking scheduler)
 
 **Task System:**
@@ -130,7 +130,7 @@ The game uses a sophisticated cooperative task scheduler with up to 64 tasks, ea
 | 1 | tracer | Trail eraser following missile path |
 | 4 | cloud | Expanding/contracting explosion circle |
 | 5 | wartrace | Warhead trail eraser |
-| 7 | sound | PC speaker sound effect |
+| 7 | sound | Sampled sound effect (PC speaker PWM / Covox) |
 
 **Wave Data Format:**
 Each wave is defined as: `warhead_speed, delay, count, delay, count, ... 0, -1`
@@ -399,7 +399,7 @@ cram data.lev lv11.crm     # Compress level data
 - The Missile Command game uses **VGA mode 12h** (640×480, 16 colors, 4 bit planes)
 - The JET game engine uses a **custom Mode X variant** (320×240, 256 colors, planar)
 - Mouse input uses **INT 33h** (Microsoft mouse driver)
-- Sound is **PC speaker only** (no Sound Blaster support in the code, though SBINFO.ZIP suggests it was planned)
+- Sound is **PC speaker (pulse-width) or Covox parallel-port DAC only**, playing digitised samples; there is no Sound Blaster code, though SBINFO.ZIP suggests it was planned
 - The `.SCR` files are raw 320×200 framebuffer dumps (64000 bytes = 320 × 200)
 - The `.V8` files appear to be 8-bit unsigned PCM audio samples
 - The `.CRM` files are compressed using the custom CRAM tool
@@ -472,11 +472,11 @@ by disassembling GAME.EXE routines (EXPAND_MAP, BLOCK_TO_XY, DRAW_SPRITE).
 - Sprite catalogue:
   - 0–7: Jet Pack Joe (8 frames, even=left, odd=right, ~32×29 px)
   - 8–19: Projectiles (various sizes/angles)
-  - 24–25: Laser beams (red/green vertical)
-  - 28–33: Red sentry/UFO (6 animation frames)
-  - 35–38: Glow balls (blue/white energy)
-  - 39–41: Birds (pink/magenta, 3 frames)
-  - 42–48: Explosion/death effects
+  - 25–26: Bird laser beam (red/green, alternating per frame)
+  - 29–32: Red bird (bird generator, 4 flap frames); 33–38: explosion sequence
+  - 39–41: Sentry (pink UFO: moving left / hovering / moving right)
+  - 42–45: Ball (ball generator enemy, 4 frames); 46–49: Joe's death debris
+  - 50–53: Glow dots (sentry thrusters, orb projectile 50/51)
   - 55–57: Toggle switch states
   - 75–81: Captive characters (kids in different colored outfits)
 
@@ -497,5 +497,8 @@ by disassembling GAME.EXE routines (EXPAND_MAP, BLOCK_TO_XY, DRAW_SPRITE).
 - Enemies: RED_BIRD, BLUE_BALL, GLOW_BALL, ORB_GENERATOR, BIRD_GENERATOR, BALL_GENERATOR
 - Environment: DOOR, TELEPORTER, BEAM_IN, BEAM_OUT, SENSOR_SWITCH, TOGGLE_SWITCH
 - Hazards: HORIZ_FIELD, VERTICAL_FIELD, LEFT_PLATE, RIGHT_PLATE, EXPLOSION1, EXPLOSION2
+- Collision bitmap bytes are typed (1 wall, 6 ball/bird, 14 Joe); CHECK_COLLISION histograms
+  the bytes under a shape, and Joe dies when anything other than his own marker or a wall is
+  found under him — see python/RESUME_STATE.md, Session 6, for the full enemy AI decode.
 - Animations: THUMBS_UP_ANIM, DEATH_ANIM, TITLE_ANIM, CREDITS_ANIM
 - Sound: Internal speaker, Covox Speech Thing, Covox Sound Master II drivers

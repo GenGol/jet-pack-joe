@@ -1,5 +1,5 @@
 # Jet Pack Joe — Reverse Engineering State Document
-# Last updated: 2026-04-20 (session 4)
+# Last updated: 2026-04-21 (session 5)
 # Purpose: Resume point for continuing the Python recreation
 
 ## PROJECT LOCATION
@@ -1248,7 +1248,7 @@ Fix: at frame 17, clear the collision bitmap at the cage wall positions
 - Cage force field animation table: DS:0x3AF5 (4 frames: tiles 232, 233, 252, 253)
 - Cage force field MODIFY_FOREGROUND_MAP call: 0x1485
 - ALLOC_SPRITE: 0x0378 (converts centered→screen coords, calls JAM driver at 0x4625)
-- Display list update: 0x02DC (calls INT 62h DX=4)
+- PLAY_SOUND: 0x02DC (AX = sound id 0-4, looks up DS00.DAT table, calls INT 62h DX=4)
 - JAM driver INT 62h entry: ~0x4599 (saves registers, dispatches on DX)
 - JAM driver double-buffer toggle: 0x47A8 (XOR SI, 1)
 - Cage collision walls: SH00.DAT shape 13 (two 2px walls, 18 rows) written to collision bitmap
@@ -1547,7 +1547,7 @@ For any object with `[DI+8] = N`:
 | 1 | 0x3967 | Read input state |
 | 2 | 0x3A51 | Unknown |
 | 3 | 0x41C6 | Read frame counter [CS:0x3AFE] → AX |
-| 4 | 0x42B3 | Render/update display list |
+| 4 | 0x42B3 | START_SOUND: ES:SI = sample, CX = 256-byte blocks → least-busy mixer channel (see Sound section) |
 | 5 | 0x3A8C | NOP (RET) |
 | 7 | 0x41D3 | Disable counter: [CS:0x3B00] = 0 |
 | 8 | 0x41CB | Enable counter: [CS:0x3B00] = 1 |
@@ -2199,11 +2199,13 @@ alternating rows), which was previously visual-only with no collision.
 
 ### Sound Driver Selection (command line)
 
-`GAME.EXE N` where N is:
-- 0 = No sound (default)
-- 1 = Internal PC speaker
-- 2 = Covox Speech Thing
-- 3 = Sound Master II
+`GAME.EXE N` where N is (from the usage text in the binary):
+- 0 = No sound, no timer speedup (18.2 Hz PIT, counter loop ×64)
+- 1 = No sound (fast timer)
+- 2 = Internal PC speaker (default)
+- 3 = Covox Speech Thing
+- 4 = Covox Sound Master II
+(No Sound Blaster support exists in the code.)
 
 No command-line level select exists. Levels play in fixed sequence.
 
@@ -2307,3 +2309,650 @@ obj["field_active"] = True
 - verify_joe.png may exist in python/ directory
 - /tmp/doswork/ and /tmp/dosjet/ have working copies
 - explosion_sprite_33-38.png in python/ directory
+
+## SESSION 5: CAPTIVE COUNT, LEVEL COMPLETION, BEAM ANIMATIONS (2026-04-21)
+
+### CRITICAL RENDERING RULES (lessons learned across all sessions)
+
+These rules MUST be followed for any future tile/sprite rendering to avoid visual bugs:
+
+#### Rule 1: Foreground tiles drawn with colorkey (black = transparent)
+Any tile drawn OVER the background (foreground layer, beam animations, force fields,
+fan overlays) MUST use `set_colorkey((0, 0, 0))` so black pixels are transparent and
+the background shows through. Without this, you get black rectangles covering the
+background tiles.
+
+**Applies to:**
+- Beam animation tiles (213-219, 234-239) — sparkle/flash effects
+- Force field tiles (232, 233, 252, 253) — cage sparkle dots
+- Vertical field tiles (80-83, 100-103, etc.) — lightning animation
+- Horizontal field tiles (64-69, 84-89, etc.) — lightning animation
+- Foreground fan tiles (fan_1/fan_2) — fan housing over Joe
+- Tile 254 — blue dither screen-door transparency
+- Any tile drawn in `render_foreground` or `draw_objects` overlay passes
+
+**Does NOT apply to:**
+- Background tiles in `render_room` — drawn opaque, fill the entire screen
+- Background fan tiles (fan_3/fan_4) — drawn opaque to surface directly
+
+#### Rule 2: Tile value 0 in animation tables means "empty/clear"
+When an animation table entry has tile index 0, it means "don't draw anything here"
+(the background shows through). Skip these entries (`if ti == 0: continue`).
+Do NOT draw tile 0 — it's the editor cursor marker, not a game tile.
+
+#### Rule 3: Foreground vs background layer — check which MODIFY function the handler calls
+- Handler calls `MODIFY_FOREGROUND_MAP` (0x04B4) → use `fg_tiles` dict, draw with colorkey
+- Handler calls `MODIFY_SCREEN_MAP` (0x04D2) → draw to surface directly, opaque
+- Background fans (fan_3/fan_4) use 0x04D2 — do NOT set fg_tiles
+- Foreground fans (fan_1/fan_2), fields, cages, doors, beams use 0x04B4 — use fg_tiles
+
+#### Rule 4: Player physics must be frozen during beam animations
+When `beam_in` or `beam_out` is active:
+- Do NOT call `player.update()` — gravity will pull Joe down during the animation
+- Do NOT process player input (movement, thrust, fire)
+- Joe's position must remain exactly where it was set
+- Joe's sprite must be hidden (not drawn)
+
+**Bug history:** Session 5 — Joe fell to the floor during beam-in because `player.update()`
+was still running. The `beaming` flag correctly froze input but not the physics update.
+
+#### Rule 5: Joe visibility during beam animations
+- **Beam-out** (dissolve away): Joe hidden when `frame >= 12` (disappears partway through)
+- **Beam-in** (materialize): Joe hidden for the ENTIRE animation (`beam_in is not None`)
+  - The flash/sparkle plays its full course, THEN Joe appears when animation completes
+  - This differs from beam-out where Joe is visible for the first 12 frames
+
+**Bug history:** Session 5 — Originally used `frame > 12` for beam-in (same as teleporter),
+which made Joe appear almost immediately (after only 3 frames of a 16-frame animation).
+For level-start beam-in, Joe must be hidden until the animation is completely done.
+
+### Fix 21: Captive Count Display in Status Bar
+
+**Change:** Replaced static "JET PACK JOE" text in the center of the status bar with
+`Rescues Remaining: XX` showing the live captive count.
+
+**Original game behavior (from GAME.EXE):**
+- Status bar string at DS:0x0321: `TIME: 000   JET PACK JOE DEMO   ROOM: 00`
+- 40 characters, rendered to text buffer at DS:0x2363 with attribute bytes
+- TIME uses attribute 0x0A (bright green), ROOM uses 0x07 (white)
+- The middle "JET PACK JOE DEMO" is STATIC — set once at init, never updated
+- Captive count at DS:0x305F is only used for the level-complete check, never displayed
+- This is a user-requested enhancement, not matching the original
+
+**Implementation:**
+```python
+self.screen.blit(self.font.render(
+    f"Rescues Remaining: {self.captive_count:02d}", False, (0, 255, 0)),
+    (SCREEN_W // 2 - 66, bar_y + 3))
+```
+
+### Fix 22: Captive Count Decrement — One-Shot Bug
+
+**Bug:** After freeing the first captive, the count dropped from 4 to 0 instead of 3.
+
+**Root cause:** The cage disappear animation's `else` branch (frame >= 17) ran EVERY FRAME
+after the animation completed, not just once. The `disappear` counter kept incrementing
+past 17, and the decrement fired repeatedly.
+
+**Fix:** Added `obj["done"]` flag so the collision cleanup and decrement only fire once:
+```python
+elif not obj.get("done"):
+    obj["done"] = True
+    # ... clear collision walls ...
+    self.captive_count = max(0, self.captive_count - 1)
+```
+
+**Pattern for future one-shot completion handlers:**
+Any code that runs "when animation completes" must guard against repeated execution.
+The animation frame counter continues incrementing — the completion branch runs every
+frame after the threshold. Always use a `done` flag or deactivate the object.
+
+### Fix 23: Level Completion — Advance to Next Level
+
+**Original GAME.EXE level completion flow (traced from disassembly):**
+
+```
+1. Last cage disappear (frame 17):
+   DEC WORD [305F]              ; captive_count--
+   If count == 0:
+     MOV BYTE [23BA], 01        ; set level complete flag
+
+2. Main loop (0x0B40) checks [23BA]:
+   == 0: normal gameplay
+   == 1: level complete → move Joe toward center (±140x, ±75y)
+   > 1:  beam-out in progress
+
+3. Once Joe centered (0x0BBF):
+   Check all objects inactive
+   Spawn beam-out at Joe's position (CALL 1F18)
+   INC [23BA] → state 2
+
+4. Beam-out completes:
+   DEC [305F] (goes to -1)
+   INC [23B9] (beam done signal)
+
+5. Main loop sees [23BA]>1 and [23B9]!=0:
+   Since [305F] <= 0 → set [305E] = 1 (level done)
+
+6. Main loop sees [305E]==1:
+   Return with carry clear → caller advances level
+```
+
+**Python implementation (simplified):**
+- When `captive_count` reaches 0: start beam-out at Joe's tile position
+- Beam-out dict has NO `dest_room` key (distinguishes from teleporter beam-out)
+- When beam-out completes: check `"dest_room" in bo`
+  - Present → teleporter path (move Joe, start beam-in)
+  - Absent → level-complete path (`set_level(current_level + 1)` or `game_won = True`)
+- Level 2 (index 2) is the last level → shows "YOU WIN!"
+
+### Fix 24: Beam-In Animation at Level Start
+
+**Original GAME.EXE behavior (0x0C5B-0x0C78):**
+```
+0x05D7: MOV BYTE [23B8], 01     ; set 'arrived' flag at level init
+...
+0x0C5B: CMP BYTE [23B8], 01     ; check arrived flag in main loop
+0x0C60: JNZ 0C7D                ; not set → skip
+0x0C6E: MOV CX, [23BF]          ; beam tile from trailer word 3
+0x0C72: MOV AX, 0000             ; init
+0x0C75: CALL 1FBF                ; spawn beam-in animation
+0x0C78: MOV BYTE [23B8], 00      ; clear flag
+```
+
+**Beam tile positions (from level data trailer word 3):**
+
+| Level | Trailer Word 3 | Tile | Col | Row | Pixel (x, y) |
+|-------|---------------|------|-----|-----|---------------|
+| 1 | 128 | 128 | 8 | 6 | (128, 72) → player (151, 88) |
+| 2 | 57 | 57 | 17 | 2 | (272, 24) → player (295, 40) |
+| 3 | 70 | 70 | 10 | 3 | (160, 36) → player (183, 52) |
+
+Player position = `(col * 16 + 23, row * 12 + 16)` matching GAME.EXE 0x0C7E offset.
+
+**Python implementation:**
+```python
+# In build_assets():
+self.beam_tile = struct.unpack_from('<H', lv_data, trailer_off + 6)[0]
+
+# In set_level():
+bcol = self.beam_tile % MAP_COLS
+brow = self.beam_tile // MAP_COLS
+self.player = Player(bcol * TILE_W + 23, brow * TILE_H + 16)
+self.beam_in = {"tile": self.beam_tile, "frame": 15, "timer": 0}
+```
+
+### Fix 25: Beam-Out Animation at Level Complete
+
+**Original GAME.EXE behavior (0x0C27-0x0C4F):**
+```
+0x0C27: MOV CX, AX              ; CX = Joe's tile position
+0x0C29: MOV AX, 0000             ; init
+0x0C2C: MOV BX, [23C9]           ; Joe's sprite handle
+0x0C30: CALL 1F18                ; spawn beam-out
+0x0C4F: INC BYTE [23BA]          ; state 1→2 (beam in progress)
+```
+
+**Python implementation:**
+```python
+# When captive_count reaches 0:
+tile = (int(self.player.y) // TILE_H) * MAP_COLS + (int(self.player.x) // TILE_W)
+self.beam_out = {"tile": tile, "frame": 0, "timer": 0}  # no dest_room = level complete
+
+# On beam-out completion (in draw_objects):
+if "dest_room" in bo:
+    # Teleporter path
+else:
+    # Level-complete path
+    if self.current_level < 2:
+        self.set_level(self.current_level + 1)
+    else:
+        self.game_won = True
+```
+
+### Fix 26: Beam Animation Tile Rendering — Colorkey Fix
+
+**Bug:** Beam animation showed black rectangles instead of background tiles showing through.
+
+**Root cause:** Beam animation tiles (213-219, 234-239) have colored sparkle dots on a
+BLACK background. They were drawn opaquely, covering the background with black.
+
+**Fix:** Set colorkey on beam tiles before blitting:
+```python
+ts = self.tile_surfs[ti]
+ts.set_colorkey((0, 0, 0))
+surface.blit(ts, (px, py))
+```
+
+This is the same pattern used by foreground tiles, force field tiles, and vertical/horizontal
+field tiles. **ALL overlay tiles must use colorkey.** See Rule 1 in CRITICAL RENDERING RULES.
+
+### Fix 27: Player Physics Frozen During Beam Animations
+
+**Bug:** Joe fell to the floor during beam-in animation because gravity was still applied.
+
+**Root cause:** The `beaming` flag froze player INPUT but `player.update()` still ran,
+applying gravity every frame. By the time the beam-in finished, Joe had fallen from the
+beam tile position to the ground.
+
+**Fix:** Skip `player.update()` when beaming:
+```python
+if not beaming:
+    cbm, pipe_floors, pipe_ceilings = self.get_collision_bitmap(self.current_room)
+    self.player.update(cbm, self.sprites, pipe_floors, pipe_ceilings)
+```
+
+### Level Data Trailer Format (complete, all 4 words now used)
+
+| Offset | Size | Field | L1 Value | L2 Value | L3 Value | Address |
+|--------|------|-------|----------|----------|----------|---------|
+| +0 | word | captive_count | 4 | 11 | 15 | DS:0x305F |
+| +2 | word | timer_value | 150 | 400 | 400 | DS:0x23DA |
+| +4 | word | start_room | 0 | 0 | 0 | DS:0x23DC |
+| +6 | word | beam_tile | 128 | 57 | 70 | DS:0x23BF |
+
+### Session 5 Key Addresses
+
+| Address | Description |
+|---------|-------------|
+| 0x0309 | INT_TO_DEC — converts AX to 5-digit ASCII at [DI] |
+| 0x032A | Update ROOM display (calls INT_TO_DEC, writes to text buffer) |
+| 0x0321 | Status bar string (DS, 40 chars): "TIME: 000   JET PACK JOE DEMO   ROOM: 00" |
+| 0x2363 | Status bar text buffer (DS, 40 words: char+attr pairs) |
+| 0x236F | Text buffer position 6 (TIME hundreds digit) |
+| 0x23AF | Text buffer position 38 (ROOM tens digit) |
+| 0x09EE | TIME display update (reads [23DA], calls INT_TO_DEC, attr=0x0A green) |
+| 0x0B40 | Main loop [23BA] dispatch (0=normal, 1=level complete, >1=beam) |
+| 0x0BBF | Level complete path — check Joe centered, spawn beam-out |
+| 0x0C27 | Beam-out spawn for level complete (at Joe's position) |
+| 0x0C5B | Beam-in check — [23B8]==1 triggers beam-in at [23BF] tile |
+| 0x0C62 | Beam-in spawn (load dest room, CALL 1FBF at [23BF] tile) |
+| DS:0x23B8 | Arrived flag (1=spawn beam-in, 0=done) |
+| DS:0x23BF | Beam tile location (trailer word 3) |
+| DS:0x305E | Level done flag (1=exit game loop with carry clear) |
+| DS:0x305F | Captive count (word, DEC on cage clear, level complete when 0) |
+
+### Current State Summary (end of session 5)
+
+**Working:**
+- Everything from sessions 1-4 ✓
+- Captive count display ("Rescues Remaining: XX") in status bar ✓
+- Captive count decrement on cage clear (one-shot, with done flag) ✓
+- Level completion: beam-out → advance to next level ✓
+- Beam-in at level start: flash animation → Joe appears ✓
+- Beam-out at level complete: Joe dissolves → next level loads ✓
+- Beam tiles rendered with colorkey (background shows through) ✓
+- Player physics frozen during all beam animations ✓
+- Joe hidden during entire beam-in (appears only after animation completes) ✓
+- Joe hidden from frame 12 during beam-out (disappears partway through) ✓
+- Game win state after completing level 3 ✓
+
+**Not yet implemented:**
+- Enemy AI: sentries (type 14), bird generators (11), ball generators (12), orb generators (20)
+- Sensor switch (type 18), plates (15/16)
+- Energy fields killing Joe on contact
+- Muzzle flash animation (cosmetic)
+- Proper status bar font (CHAR.ASM green digital font)
+- Sound effects, cutscene animations
+- Death animation (sprites 46-49)
+- Enemy collision shapes from SH00.DAT
+
+### Fix 28: Plates (types 15/16) — IN PROGRESS
+
+**Status:** Animation and collision working. Death on crush NOT yet implemented.
+
+**Original GAME.EXE handlers:** left_plate at 0x17A0, right_plate at 0x189B
+
+**Plate mechanics (from disassembly):**
+- Plates are moving collision walls that oscillate back and forth horizontally
+- `switch_state[var_id]` cycles 0→51 (52 values), wrapping via byte INC + CMP 52
+- Position table at DS:0x39BD: 52 entries × 6 bytes [x_offset, anim_frame, tile_col]
+  - Values 0-26: plate moves outward (x_offset 0→52)
+  - Values 27-51: plate moves back (x_offset 50→2)
+- `[DI+08] = 0x000A` (tick interval = 10, very fast)
+- `[DI+1D]` = frame counter, starts at 3. TEST with 3 → full update every 4th call
+- Non-update frames: DRAW_COLLISION(shape=18, type=1) at current position (refresh)
+- Full update: erase old collision, advance state, update tiles, write new collision
+
+**Collision shape 18:** 6w × 30h half-res, alternating filled/empty rows (like door shape 3 but taller). Only the 6-pixel leading edge has collision — the horizontal pipe trail is visual only.
+
+**Left vs Right plate differences:**
+- Left plate: `CX = tile_loc + tile_col` (tiles extend rightward)
+  - Collision: `base_x + x_off`
+  - Trail fill: tile_loc, tile_loc+1, ..., tile_loc+tile_col-1 (rightward)
+  - Animation table at DS:0x3995
+- Right plate: `CX = tile_loc - tile_col` (tiles extend leftward)
+  - Collision: `base_x - x_off + 4`
+  - Trail fill: tile_loc, tile_loc-1, ..., tile_loc-tile_col+1 (leftward)
+  - Animation table at DS:0x39A9
+
+**Animation frames:** 10 frames (0-9) per plate type. Each frame replaces a 1×5 or 2×5 tile column. Frames 0, 8, 9 handle column transitions (tile 0 entries clear trailing positions). Tiles used: 51-53, 71-73, 91-93, 111-113, 131-133, 151-153, 171-173, 190-191.
+
+**Trail fill (0x1870-0x1882 / 0x196B-0x197D):**
+Writes tile 71 to foreground map at rows 1 and 3 below tile_loc for each column the plate has passed through. This creates the horizontal pipe bars extending behind the moving plate edge. Tile 71 is visual only — no collision.
+
+**Tile offset format:** Animation frame tile offsets are FLAT MAP ARRAY OFFSETS added directly to the base tile position (`fg_idx = base_tile + toff`). NOT decomposed into (col, row) pairs. Example: offset 19 from position 111 = position 130 = (col=10, row=6), which is one row down, one column left.
+
+**Collision timing (critical):**
+- Collision is written in `update_objects()` BEFORE `player.update()` so the bitmap is current when the player checks it
+- `draw_objects()` handles the erase/advance/rewrite cycle for moving the collision position
+- The erase in `draw_objects` removes the old position AFTER the player has already been checked
+- This avoids the bug where collision was written after player update (player never saw it)
+
+**Rendering:**
+- Plate tiles go through `render_foreground` with colorkey (black = transparent)
+- Types 15/16 added to the `fg_overrides` collection list
+- `fg_tiles` dict accumulates (NOT cleared each frame) — animation frames self-clean via tile 0 entries
+- Tile 71 trail entries persist in fg_tiles as the plate extends
+
+**Byte overflow handling:**
+`(switch_state[var_id] + 1) & 0xFF` then `if val >= 52: val = 0`. This matches the original's `INC AL; CMP AL, 34h; JC skip; SUB AL,AL`. Starting from 0xFF: `(255+1) & 0xFF = 0`, which is correct.
+
+**Plates found in:**
+| Level | Room | Type | Tile Loc | Var ID |
+|-------|------|------|----------|--------|
+| 2 | 18 | left_plate | 104 (col=4,row=5) | 44 |
+| 2 | 18 | right_plate | 111 (col=11,row=5) | 45 |
+| 3 | 2 | left_plate | 43 (col=3,row=2) | 2 |
+| 3 | 2 | right_plate | 51 (col=11,row=2) | 3 |
+| 3 | 19 | left_plate | 108 (col=8,row=5) | 42 |
+| 3 | 19 | right_plate | 115 (col=15,row=5) | 43 |
+| 3 | 20 | left_plate | 108 (col=8,row=5) | 32 |
+| 3 | 20 | right_plate | 115 (col=15,row=5) | 33 |
+
+**Still TODO for plates:**
+- Death when plates crush Joe (plates close on him)
+- Need to trace the original's crush detection — likely CHECK_COLLISION with Joe's shape against the plate, or detecting when both plates overlap Joe's position
+- Death animation (sprites 46-49) not yet implemented globally
+
+**Bugs found and fixed during implementation:**
+1. fg_overrides collection list missing types 15/16 → tiles not rendered
+2. Tile offsets decomposed as (col,row) instead of flat map offsets → wrong positions
+3. Opaque rendering caused black rectangles → need colorkey for transparency
+4. fg_tiles cleared every frame → pipe trail disappeared as plate moved
+5. Collision written in draw_objects (after player update) → player never saw it
+6. Leftover duplicate code and missing sentry sprite line after refactor
+
+**Key addresses (plates):**
+| Address | Description |
+|---------|-------------|
+| 0x17A0 | left_plate handler |
+| 0x189B | right_plate handler |
+| 0x17C2 | left_plate init |
+| 0x1811 | left_plate update |
+| 0x18BD | right_plate init |
+| 0x190C | right_plate update |
+| DS:0x3995 | Left plate animation table (10 frame pointers) |
+| DS:0x39A9 | Right plate animation table (10 frame pointers) |
+| DS:0x39BD | Plate position table (52 entries × 6 bytes) |
+| Shape 18 | Plate collision: 6w × 30h half-res, alternating rows |
+
+### Debug Key Added
+- **T key**: Jump to Level 2 Room 18 (plate test room)
+## SESSION 6: ENEMY AI — SENTRY, BALLS, ORBS, BIRDS, GLOW BALL, DEATH (2026-10-13)
+
+### Tools used (so this is not forgotten again)
+- **ndisasm** (Homebrew `nasm` package) for static disassembly. Code address N lives at file
+  offset N + 0x200 (MZ header). Helper used this session:
+  `ndisasm -b 16 -o 0x22EF -e 0x24EF GAME.EXE` → disassembles from code address 0x22EF.
+  Data segment: DS = 0x049E → file offset of DS:X = 0x200 + 0x49E0 + X.
+- **DOSBox-X** (`brew install dosbox-x`) runs GAME.EXE and UNCRAM.EXE and has a built-in
+  debugger for breakpoints/stepping/memory dumps.
+
+### THE COLLISION ENGINE, FINALLY UNDERSTOOD (this unlocked all enemy behaviour)
+
+The collision bitmap bytes are **typed**, and CHECK_COLLISION is a histogram, not a boolean.
+
+**CHECK_COLLISION core (0x2F11):** with filter BL, scans the shape and counts every byte
+that is **not equal to BL**, bucketed by byte value into DS:0x3167..0x3176 (16 counters).
+Returns AX = total, ZF=1 if total == 0.
+- `[0x3168]` = count of type-1 bytes (walls)      `[0x3175]` = count of type-14 bytes (Joe)
+- BL=0  → "is anything solid here" (movement checks)
+- BL=own_type → "has anything intruded on my own footprint" (Joe uses 14, balls/birds use 6)
+
+**Collision byte types:**
+| Type | Written by |
+|------|-----------|
+| 1 | walls (tiles), doors, fields, cages, plates, **sentry** |
+| 6 | balls and birds (DRAW_COLLISION with BL=6) |
+| 14 | **Joe** — DRAW_COLLISION(shape 0, BL=0x0E) at the END of every Joe update (0x0E3B) |
+
+**The four bitmap primitives (all take AX=shape, CX/DX=centered coords):**
+| Wrapper | Core | Effect |
+|---------|------|--------|
+| 0x043C | 0x2F11 | CHECK (histogram, see above) |
+| 0x045A | 0x2ED8 | DRAW_COLLISION: fill shape with type BL |
+| 0x0473 | 0x2F8A | DRAW_VISUAL: restore shape area from backup bitmap (ES:0x4820) |
+| 0x048C | 0x2FCB | conditional erase: restore from backup only where byte == BL |
+
+**How Joe dies (0x0CCC-0x0CE9):** at the start of his update his own marker is still in the
+bitmap from last time. `CHECK(shape 0, BL=14)` counts everything that is not 14. If the total
+is non-zero and differs from the wall count → `JMP 0x0F05` (death). So **any byte under Joe
+that is neither 14 nor 1 kills him** — including **0**. A 0 appears whenever another object
+did a DRAW_VISUAL (backup restore) over Joe. That is the kill mechanism for:
+- vertical/horizontal fields (erase shape 8/12 every update), glow balls (erase shape 6)
+- the bird's laser (DRAW_VISUAL shape 15 — the 1-wide column above the bird)
+- the orb (DRAW_VISUAL shape 22 at its hit point) and the ball's ring (DRAW_VISUAL shape 17)
+- type 6 bytes (ball/bird body overlapping Joe) kill directly.
+Then Joe erases his marker (0x048C BL=14), moves, and the **9-position nudge** (0x0CFB-0x0D5B)
+runs; if all 9 are blocked → `JMP 0x0F05` as well (**crush death**: plates, doors, sentry).
+
+**How shots kill (0x10A5-0x10F9):** CHECK(shape 1, BL=0). If the hit contains no Joe bytes:
+DRAW_VISUAL(shape 1) — restores the backup under the 4×2 shape, which **wipes a ball's or
+bird's type-6 bytes**; the enemy's next own-footprint check (BL=6) sees the 0s and explodes.
+Then the wall-hit explosion (0x1103) spawns and the shot dies. Hits with only Joe → keep
+flying; Joe plus something else → vanish silently. **Sentries never do an own-footprint
+check, so they are invulnerable** (a shot just explodes against them).
+
+**0x0F05 is NOT a muzzle flash — it is Joe's death animation.** Earlier notes were wrong.
+`[0x23D4]` is the death frame (-1 = alive), `[0x23C7]` the countdown (8 Joe-updates to the
+first step, 7 after; Joe updates every 10 ticks → 70 ticks ≈ 3.5 frames per step):
+- frames 1-15: Joe's sprite = frame & 7 (tumbles through his 8 frames); spawn 0x1103 glow at
+  Joe + (random(29)-13, random(23)-11)
+- frames 16-23: sprite 46 + (frame-16)/2 (debris 46,46,47,47,48,48,49,49); glow at
+  Joe + (random(37)-18, random(45)-22)
+- frame 25: FREE Joe's sprite (hidden); frame 58: [0x305E]=1 → level loop exits. The demo's
+  caller (0x02C3) just restarts the level.
+
+### Timing model (main loop 0x06A4-0x0788, corrected)
+The loop runs Joe (every 10 ticks), the timer (1165 ticks), the state machine (129 ticks) and
+every object (its [DI+8]) **repeatedly without rendering while anything is due** (`OR BP,BP`
+at 0x074B); it renders (0x03BA, ≥20 ticks apart) only when nothing ran. So objects really run
+at their own tick rate — an interval of 9 means ~2.2 updates per render frame, not 1.
+Python: `self.tick += TICKS_PER_FRAME (1165.2/60)` per frame; each entity runs
+`while next_time <= tick: update(); next_time += interval` (handlers may adjust next_time).
+
+### Object handler reference (all decoded this session)
+
+**Object slot fields reused by enemies:** [0x0A/0x0C] x/y, [0x0E] sprite handle, [0x10/0x12]
+|dx|/|dy| or home pos, [0x16/0x18] step signs or vy/frac, [0x1A] bresenham error or 3rd sprite,
+[0x1C] sprite/frame, [0x1D] frame accumulator / thrust flag, [0x1E] retarget counter / dir,
+[0x1F] step phase. Dispatch: AX=0 init, 1 activate (alloc sprites, write collision), 2 update,
+3 hide (free sprites, erase collision), 4 clone-for-room-change (0x09A6), 5 destroy.
+
+#### Sentry — type 14, handler 0x22EF — sprites **39/40/41** (pink UFO), NOT a bird
+- Init: position = BLOCK_TO_XY(location); var_id → if switch_state[var]==0 skip spawn;
+  interval 0x1B (27). Activate: 3 sprites (body 39+dir, glow 50/51(+2 when thrusting) at
+  (x, y+10), glow 52/53 at (x − (17·dir − 17), y − 2)), handles sorted so the body is on top.
+- Update: DRAW_VISUAL(shape 19+dir); dir = 1 if |x − JoeX + 8| < 16 else (2 if x < JoeX
+  else 0); x += dir − 1; CHECK(19+dir, BL=0): clear → facing = dir; hit only Joe → still
+  move; else revert. Vertical = Joe's physics: vy += 41, −82 if y ≥ JoeY (thrust), clamp
+  ±1000, thousandths accumulator → ±1 px; CHECK(19+facing): blocked by non-Joe → revert,
+  vy = 0. DRAW_COLLISION(19+facing, type 1). Sprites 50..53 flicker with [0x2361]&1.
+- Kills Joe by ramming (writes type 1 over him → nudges fail → crush) and by its own
+  DRAW_VISUAL wiping his marker. Shapes 19/21 are 17×11 half-res, 20 is 11×11.
+- Instances: L3 R11 @225 (var 34), L3 R13 @98 (var 43). Vars not in L3's switch-off list.
+
+#### Ball generator — type 12, 0x14F5 — and Ball — 0x15A2 — sprites **42-45** (electric)
+- Generator: pos = tile + (15,11); interval 0x101 (257); countdown random(4)+4.
+  Update: countdown−1; at 3/2/1 → MODIFY_SCREEN_MAP frames 1/2/3 of table DS:0x31BF
+  (2×2 tiles 506-507/526-527, 508-509/528-529, 546-547/566-567, 548-549/568-569); at 0 →
+  if CHECK(shape 16) clear: spawn ball, countdown = 8, frame 0; if blocked: retry next update.
+- Ball init: CHECK(shape 2) must be clear; interval 0x10; retarget=1. Activate: sprite 42+frame,
+  DRAW_COLLISION(16, type 6).
+- Ball update: every 25 updates re-aim: |dx|,|dy|,signs toward Joe. CHECK(16, BL=6) non-zero
+  → explode (0x11BA with its sprite handle). Erase own (0x048C BL=6). Bresenham step
+  (err ≤ 0: x += sx, err += |dy|, every other step next_time −= 7; else y += sy,
+  err −= |dx|, next_time += 3, every other −= 7). ROOM_TRANSITION → hide. CHECK(16, BL=0)
+  blocked → revert + retarget. DRAW_VISUAL(**shape 17**, the 11×9 ring) then
+  DRAW_COLLISION(16, 6). Frame acc += 22/256 → sprite 42 + (frame & 3).
+- The ring restore kills Joe on touch and pops neighbouring balls.
+- Instances: L1 R5 ×2; L2 R0, R19 ×2; L3 R3 ×4, R9 ×2, R12.
+
+#### Orb generator — type 20, 0x2526 — and Orb — 0x25C1 — sprites 50 (spawn) / 51 (flight)
+- Generator: pos = tile + (15,11); interval 0x2B (43); countdown random(14)+4. Update:
+  countdown−1 → MODIFY_SCREEN_MAP frame = countdown value from the 18-entry table DS:0x3233
+  (2×2 tiles 622..633/642..653 pulsing); at 0 → spawn orb, countdown = 18, frame 0.
+- Orb init: CHECK(shape 2) clear; first update after 50 ticks, then interval 9; aimed ONCE at
+  Joe (|dx|,|dy|,signs). Update: bresenham step (x steps: every other next_time −= 3; y steps:
+  next_time += 1, every other −= 3), ROOM_TRANSITION → hide, CHECK(**shape 22**, 5×3, BL=0):
+  clear → move, sprite 51; hit → DRAW_VISUAL(22) at the hit point (kills Joe), explode
+  (0x11BA), die. Writes no collision of its own.
+- Instances: L2 R1; L3 R14, R16, R17, R21.
+
+#### Bird generator — type 11, 0x1488 — and Bird — 0x199A — sprites **29-32** (red bird)
+- Generator: pos = tile + (15,11); interval 0x5E7 (1511 ≈ 1.3 s), first spawn after
+  random(1511) ticks; no tile animation. Spawns via 0x199A AX=0 (CHECK(shape 2) must be clear).
+- Bird: interval 0x14 (20), rises 1 px per update, sprite 29→32 (acc += 0x2A/256), collision
+  shape 2 type 6. Laser: when idle, CHECK(**shape 15** — a 1-wide, 43-row-tall dashed column
+  above it, rows −46..−4) and if `[0x3175]` (Joe bytes) ≠ 0: laser = 10 updates,
+  DRAW_VISUAL(15) (kills Joe), allocate sprite **25** (red beam, 89 px tall) shown as
+  25/26 (red/green) alternating per render frame. Own-footprint CHECK(2, BL=6) non-zero →
+  explode (0x11BA). Moving into a type-1 byte (ceiling) → vanish silently (hide + destroy).
+- Instances: L1 R8; L2 R19 (R68 is the trailer, ignore).
+
+#### Glow ball — type 13, 0x134D — NOT a sprite
+Uses the shared field handler 0x1E3C with DX=5 (collision shape), SI=DS:0x3BA9 (table).
+Table has 5 frames of 2×2 foreground tiles (offsets 0,1,20,21):
+0: 94,95,114,115  1: 96,97,116,117  2: 134,135,154,155  3: 136,137,156,157
+4 (dormant, drawn once when the switch turns it off): 138,139,158,159.
+ON: DRAW_VISUAL(shape 6, 16×12 hollow ring) then DRAW_COLLISION(shape 5, 14×10 hollow ring,
+type 1), frame = counter & 3, interval 0x4F. OFF: frame 4 + DRAW_VISUAL(shape 5).
+Shared handler detail: the OFF path erases with `[DI+0x16]` (the write shape), the ON path
+erases with `[DI+0x16]+1`. Instances: L3 R3 ×5 (sw16, OFF at start), R12 ×2 (sw18),
+R19 ×2 (sw30/31), R20 (sw200).
+
+#### Enemy explosion — 0x11BA
+Same as 0x1103 (sprites 33→38, interval 0x47) but inherits the dead enemy's sprite handle in
+[DI+0x14] and frees it when the explosion reaches sprite 37 — the enemy's last frame stays
+visible under the first four explosion frames.
+
+#### Room change (0x0802) and objects
+Every object of the old room gets AX=3 (hide) or AX=4 (clone, simulated for 0xD48 ticks,
+then hide+destroy); the new room's object list is re-initialised from scratch (0x0961). So
+enemies and generator countdowns restart on every room entry. Sentry AX=5 restores
+switch_state[var]=0xFF so it respawns next visit.
+
+### Sprite catalogue corrections
+| Sprites | Earlier notes said | Actually |
+|---------|-------------------|----------|
+| 29-32 | red sentry/UFO | **red bird** (bird generator), 33 = explosion start |
+| 39-41 | pink bird | **sentry** (type 14): 39 moving left, 40 hovering, 41 moving right |
+| 42-45 | electric zap / death | **ball** (ball generator) animation |
+| 46-49 | death debris | confirmed: Joe's death frames 16-23 |
+| 50-53 | glow balls | sentry thruster glows (50/51 idle, 52/53 thrusting/trail), orb 50/51 |
+| 25/26 | laser beams | bird laser, red/green alternating |
+
+### Python implementation (jet_pack_joe.py)
+- `cb_check / cb_write / cb_restore / cb_restore_if` — the four primitives, on the 160×96
+  bitmap (no 32-col padding; out-of-range bytes are skipped in every primitive, which is
+  equivalent because the original writes and reads its padding alike). `sh_shape(idx)`
+  decodes any SH00.DAT entry on demand.
+- Joe: `joe_check_and_unmark()` at the start of the frame (death rule + marker erase),
+  `joe_mark()` after movement/room transition, crush check with `CRUSH_NUDGES`.
+  `self.joe_marked is cbm` guards against a rebuilt bitmap being read as a kill.
+- Entities (`Sentry, Ball, Orb, Bird, BallGen, OrbGen, BirdGen, EnemyExplosion`) live in
+  `self.entities`, created by `enter_room()` (called whenever `current_room` changes),
+  scheduled by `update_entities()` on `self.tick`, drawn by `draw_entities()` under Joe,
+  lasers with Joe, explosions above the foreground.
+- `Shot` now steps every 15 ticks and uses the shape-1 histogram rule; it restores the backup
+  under its hit (which is what kills balls/birds). `Player.update` takes `backup`.
+- Vertical field ON path now erases shape 8 before writing shape 7 (h_field already did), so
+  fields kill. Glow ball replaced the sprite stub with the tile/ring implementation.
+- Death: `start_death / update_death / finish_death` (restart level, lives −1, game over at 0).
+- `JPJ_DEBUG=1` prints the byte-type histogram on every death and crush.
+- Draw order: background → draw_objects → generator tiles → enemies → Joe → lasers →
+  foreground → explosions.
+
+### Verified headlessly (SDL dummy driver, scripted keys)
+Balls spawn with generator tile animation, home on Joe and kill on contact ({0: n} under Joe);
+birds rise, fire the laser when Joe is above and kill; orbs fly straight at Joe and kill;
+the sentry chases and crushes; the vertical field kills on touch ({0: 11}); a shot pops a ball
+(explosion with ghost sprite); the death animation runs 58 steps, restarts the level and
+decrements lives; normal level start and walking unaffected; 600 busy frames in 0.18 s.
+
+### Still not implemented
+- Sensor switch (type 18; 0x2061 decoded this session: CHECK(shape 4, BL=1) → if Joe bytes
+  present copy switch_state[sw2] into switch_state[sw1]; visual tile = 0x116 + (sw1?1:0) +
+  (sw2?0x14:0) + (touching ? 0x28 or 0x14 : 0) written to the screen map).
+- Plate crush death now happens automatically via the crush check (verify in L2 R18).
+- Exact Joe physics (10-tick updates) — Python keeps its tuned per-frame physics.
+- Sound, cutscenes, original status-bar font.
+
+### Headless test suite (added 2026-11-01)
+
+The session-scratchpad harness from Session 6 was lost when that session ended, so it now lives in
+the project:
+
+- `python/tests/harness.py` — `Driver` runs the real `JetPackJoe.run()` loop under SDL's dummy
+  video driver with scripted keys (`goto(level, room)`, `place(x, y)` finds the nearest free spot
+  in the collision bitmap, `run(frames, keys, until)`, `dump_room()`, `save(png)`), plus
+  `enemy_rooms(game)` listing every room with enemy/generator objects.
+- `python/tests/test_enemies.py` — nine regression tests: safe level start, ball/sentry/bird kill
+  Joe, orbs spawn, a shot pops a ball into an EnemyExplosion, death restarts the level with one
+  fewer life, game over on the last life, and a 40-frame smoke run of every enemy room.
+
+Run with `python3 python/tests/test_enemies.py` (about 2 s, no pytest needed; pytest also works).
+Pass a test name to run one; set `JPJ_DEBUG=1` for tracebacks and death histograms.
+
+
+## SESSION 7: SOUND (2026-11-01)
+
+### What the original does
+- Sound is **sampled**, not tones. `DRAW/LIST` names the five effects: 0 expl2.v8 (missile
+  explosion), 1 swoosh1.v8 (missile shoot), 2 outta.v8 ("help me"), 3 zirble2.v8 (transporter),
+  4 thanks1.v8 ("thank you"). The .V8 files are raw unsigned 8-bit PCM.
+- **DS00.DAT** (38928 bytes, in JET.RSC) is the in-game sound bank: six words of paragraph
+  offsets (×16 = byte offset; the 6th is the end), then each sample converted to 6-bit
+  (`v8 >> 2`, silence 0x20) and padded to a multiple of 256 bytes. Lengths: 7424 / 5888 /
+  11520 / 9728 / 4352 bytes.
+- **PLAY_SOUND 0x02DC**: AX = id; table segment at DS:[0x349]; ES = seg + start paragraph,
+  CX = (end − start) / 16 = number of 256-byte blocks; INT 62h DX=4.
+- **START_SOUND 0x42B3** (INT 62h DX=4; the old notes called it "display list"): four channel
+  records at CS:0x3B1C, 8 bytes each (ptr off/seg, blocks left, start frame). The channel with
+  the fewest blocks left is taken, finished or not.
+- **SOUND_MIXER 0x4308**: called from the counter tick 0x441E every 32 ticks (1165.2/32 =
+  36.4 Hz). Copies 256 bytes of channel 0 (or the 0x20 silence buffer at CS:0x40BC) into one
+  of two 0x110-byte buffers, adds channels 1-3 (as 128 words; 4 × 63 < 256 so no carries),
+  then translates each byte through a table: Covox 0x3EB6 (`(sum−0x80)*4+0x80`, floor 1,
+  ceiling 0xFE), speaker 0x3FB6 (`sum−0x60`, 1..0x40). Linear only for ±31 around 0x80, so a
+  single full-scale voice fills the range and overlaps clip.
+- **ISRs**: speaker 0x4487 (PIT ch0 divisor 64 = 18643 Hz; PIT ch2 mode 0 pulse width = sample;
+  pointer advances on alternate interrupts via `rol [0x3B19]=0x55`, so 9321.7 Hz effective);
+  Speech Thing 0x44EC (divisor 128, LPT1 data port) and Sound Master 0x4524 (port 0x22F) at
+  one sample per interrupt = **1193182/128 = 9321.7 Hz**. All drivers tick the counter at
+  1165.2 Hz. Sound init 0x41DB, stop-all 0x42EA.
+- **Who plays what** (callers of 0x02DC):
+  | Site | Sound | Event |
+  |---|---|---|
+  | 0x0EF8 | 1 shoot | fire button |
+  | 0x1151 | 0 explosion | shot explosion init (0x1103) — also every death-animation burst |
+  | 0x120A | 0 explosion | enemy explosion init (0x11BA) |
+  | 0x1406 | 2 help me | captive init (room entry with an unrescued cage) |
+  | 0x1468 | 4 thank you | Joe touches the captive |
+  | 0x0AFC | 3 transporter | Joe beam-in object init (level start) |
+  | 0x1F62 | 3 transporter | beam-out object init (cage clear, level end, teleport out) |
+  | 0x2020 | 3 transporter | beam-in object init (teleport arrival) |
+  The object slot byte +3 ("sound_id") is only written by the slot allocator; no handler uses it.
+
+### Python implementation (jet_pack_joe.py)
+- `SoundBank` decodes DS00.DAT into five `pygame.mixer.Sound`s (6-bit → 16-bit, ±31 → full
+  scale, zero-order-hold resample from 9321.7 Hz to the mixer rate), runs 4 channels and
+  steals the one with the least time left, like 0x42B3. `play_sound(id)` is the PLAY_SOUND
+  wrapper; `SoundBank.history` records the last 64 ids for tests.
+- Hooks: `Player.fire` → 1; `Explosion.__init__` and `EnemyExplosion.__init__` → 0 (so the
+  death animation rumbles like the original); `enter_room` → 2 per unrescued cage; cage rescue
+  → 4 then 3; every beam_in/beam_out creation → 3.
+- Off switch mirrors the original: `python3 jet_pack_joe.py 0` (or `1`) = no sound, or
+  `JPJ_SOUND=0`. Default is sound on.
+- Tests: `python3 python/tests/test_sound.py` (bank loads, durations, each trigger).

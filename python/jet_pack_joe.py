@@ -29,7 +29,9 @@ Controls:
   1 / 2 / 3  — Switch level
 """
 
-import struct, os, pygame
+import struct, os, sys, time, random
+from array import array
+import pygame
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 
@@ -217,6 +219,624 @@ def joe_hits_bg(cbm, ox, oy):
                 return True
     return False
 
+# ---------------------------------------------------------------------------
+# Collision bitmap engine — faithful port of GAME.EXE 0x2ED8 / 0x2F11 / 0x2F8A / 0x2FCB
+# ---------------------------------------------------------------------------
+TICKS_PER_FRAME = 1165.2 / FPS   # original 1193182/1024 Hz object counter, spread over our frames
+
+# Collision byte types. CHECK_COLLISION histograms the bytes under a shape by type:
+#   1  = solid (walls, doors, fields, cages, plates, sentry)
+#   6  = ball or bird (written with BL=6)
+#   14 = Joe (written with BL=0x0E at 0x0CC4 / 0x0E3E)
+CT_WALL, CT_ENEMY, CT_JOE = 1, 6, 14
+
+_SH_DATA = load_raw("SH00.DAT")
+_SH_CACHE = {}
+
+
+def sh_shape(idx):
+    """Decode SH00.DAT entry idx into (row_off, col_off, count) half-res scan segments."""
+    if idx in _SH_CACHE:
+        return _SH_CACHE[idx]
+    off = struct.unpack_from('<H', _SH_DATA, idx * 2)[0]
+    pos, di, scans = off, 0, []
+    while pos + 2 < len(_SH_DATA):
+        delta = struct.unpack_from('<h', _SH_DATA, pos)[0]
+        pos += 2
+        count = _SH_DATA[pos]
+        pos += 1
+        if count == 0:
+            break
+        di += delta
+        row = round(di / 192)
+        scans.append((row, di - row * 192, count))
+        di += count
+    _SH_CACHE[idx] = tuple(scans)
+    return _SH_CACHE[idx]
+
+
+def cb_check(cbm, shape, hx, hy, filt=0):
+    """CHECK_COLLISION core (0x2F11). Counts the bytes under `shape` at half-res (hx, hy)
+    that differ from `filt`, bucketed by type → (total, hist[16]).
+    filt=0  → "is anything solid here" (movement checks)
+    filt=own_type → "has anything intruded on my own footprint" (Joe uses 14, balls/birds 6).
+    Bytes outside the bitmap are skipped (the original's padding is written and read alike)."""
+    hist = [0] * 16
+    total = 0
+    for row_off, col_off, count in sh_shape(shape):
+        sy = hy + row_off
+        if sy < 0 or sy >= HALF_H:
+            continue
+        base = sy * HALF_W
+        x0 = hx + col_off
+        for sx in range(max(0, x0), min(HALF_W, x0 + count)):
+            v = cbm[base + sx]
+            if v != filt:
+                hist[v & 15] += 1
+                total += 1
+    return total, hist
+
+
+def cb_write(cbm, shape, hx, hy, val):
+    """DRAW_COLLISION core (0x2ED8): fill the shape with collision type `val`."""
+    for row_off, col_off, count in sh_shape(shape):
+        sy = hy + row_off
+        if sy < 0 or sy >= HALF_H:
+            continue
+        base = sy * HALF_W
+        x0 = hx + col_off
+        for sx in range(max(0, x0), min(HALF_W, x0 + count)):
+            cbm[base + sx] = val
+
+
+def cb_restore(cbm, backup, shape, hx, hy):
+    """DRAW_VISUAL core (0x2F8A): restore the shape area from the room's backup bitmap.
+    The original relies on the side effect: it wipes any object marker in the area
+    (Joe's 14, a ball's 6). This is how fields, lasers, orbs and enemies kill Joe."""
+    if backup is None:
+        return
+    for row_off, col_off, count in sh_shape(shape):
+        sy = hy + row_off
+        if sy < 0 or sy >= HALF_H:
+            continue
+        base = sy * HALF_W
+        x0 = hx + col_off
+        for sx in range(max(0, x0), min(HALF_W, x0 + count)):
+            cbm[base + sx] = backup[base + sx]
+
+
+def cb_restore_if(cbm, backup, shape, hx, hy, val):
+    """0x048C → 0x2FCB: restore from backup only where the byte equals `val`
+    (an object erasing its own marker without disturbing anything else)."""
+    if backup is None:
+        return
+    for row_off, col_off, count in sh_shape(shape):
+        sy = hy + row_off
+        if sy < 0 or sy >= HALF_H:
+            continue
+        base = sy * HALF_W
+        x0 = hx + col_off
+        for sx in range(max(0, x0), min(HALF_W, x0 + count)):
+            if cbm[base + sx] == val:
+                cbm[base + sx] = backup[base + sx]
+
+
+# Joe's collision handler (0x0CFB-0x0D5B): 9 positions tried before giving up and dying (crush).
+CRUSH_NUDGES = ((0, 0), (-2, 0), (2, 0), (0, -2), (0, 2), (-2, 2), (2, 2), (2, -2), (-2, -2))
+
+
+def in_room(x, y):
+    """ROOM_TRANSITION (0x0521) exit test for moving objects: leaving the 320x192 area."""
+    return 0 <= x < SCREEN_W and 0 <= y < SCREEN_H
+
+
+# ---------------------------------------------------------------------------
+# Enemy / generator entities — ports of the GAME.EXE object handlers.
+# Each runs on the original tick scheduler: update() is called whenever game.tick has
+# passed next_time, then next_time += interval (handlers may also adjust next_time).
+# ---------------------------------------------------------------------------
+class Entity:
+    interval = 20
+
+    def __init__(self, x, y, tick):
+        self.x, self.y = int(x), int(y)
+        self.next_time = tick
+        self.alive = True
+        self.sprite_idx = None
+
+    def update(self, g):
+        pass
+
+    def draw(self, surface, sprites, frame):
+        if self.sprite_idx is not None and self.sprite_idx < len(sprites):
+            sp = sprites[self.sprite_idx]
+            surface.blit(sp["surf"], (self.x + sp["x_off"], self.y + sp["y_off"]))
+
+
+class EnemyExplosion(Entity):
+    """Handler 0x11BA: glow explosion (sprites 33-38) at a dead enemy's position. The enemy's
+    last sprite ("ghost") stays visible until the explosion advances to sprite 37."""
+    interval = 71
+
+    def __init__(self, g, x, y, ghost):
+        super().__init__(x, y, g.tick)
+        self.idx = 33        # [DI+0x1C]
+        self.shown = None
+        self.ghost = ghost
+        play_sound(SND_EXPLOSION)                # 0x120A
+
+    def update(self, g):
+        if self.idx == 39:
+            self.alive = False
+            return
+        self.shown = self.idx
+        self.idx += 1
+        if self.idx == 37:
+            self.ghost = None   # FREE_SPRITE of inherited handle at 0x126F
+
+    def draw(self, surface, sprites, frame):          # enemy layer: the ghost
+        if self.ghost is not None:
+            sp = sprites[self.ghost]
+            surface.blit(sp["surf"], (self.x + sp["x_off"], self.y + sp["y_off"]))
+
+    def draw_top(self, surface, sprites):              # top layer: the explosion
+        if self.shown is not None:
+            sp = sprites[self.shown]
+            surface.blit(sp["surf"], (self.x + sp["x_off"], self.y + sp["y_off"]))
+
+
+class Sentry(Entity):
+    """Object type 14, handler 0x22EF. Pink UFO (sprites 39/40/41 = moving left / hovering /
+    moving right) that chases Joe with Joe's own jetpack physics (gravity 41, thrust 82,
+    velocity clamped to ±1000 thousandths/update). Collision shapes 19/20/21 written as type 1.
+    It never checks for intrusions, so it cannot be killed. Two glow sprites (50-53) trail it."""
+    interval = 27
+
+    def __init__(self, g, x, y):
+        super().__init__(x, y, g.tick)
+        self.facing = 1    # [DI+0x1C]
+        self.vy = 0        # [DI+0x16]
+        self.frac = 0      # [DI+0x18]
+        self.thrust = 0    # [DI+0x1D]: 0 idle, 2 thrusting (selects glow sprite 50/51 vs 52/53)
+        cb_write(g.cbm, 19 + self.facing, self.x >> 1, self.y >> 1, CT_WALL)   # activate (0x23EA)
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        x, y = self.x, self.y
+        cb_restore(cbm, backup, 19 + self.facing, x >> 1, y >> 1)   # DRAW_VISUAL old footprint
+        self.thrust = 0
+        tx, ty = int(g.player.x), int(g.player.y)
+        # Horizontal: step toward Joe unless within 8px (0x240F-0x243C)
+        diff = x - tx
+        if -8 <= diff < 8:
+            d = 1
+        elif diff < 0:
+            d = 2
+        else:
+            d = 0
+        nx = x + d - 1
+        total, hist = cb_check(cbm, 19 + d, nx >> 1, y >> 1, 0)
+        if total == 0:
+            self.facing = d
+        elif total != hist[CT_JOE]:
+            nx = x              # blocked by something other than Joe
+        # Vertical: gravity, thrust when level with or below Joe (0x2462-0x24B6)
+        vy = self.vy + 41
+        if y >= ty:
+            vy -= 82
+            self.thrust = 2
+        vy = max(-1000, min(1000, vy))
+        self.vy = vy
+        frac = self.frac + vy
+        ny = y
+        if frac < 0:
+            frac += 1000
+            ny -= 1
+        elif frac >= 1000:
+            frac -= 1000
+            ny += 1
+        self.frac = frac
+        total, hist = cb_check(cbm, 19 + self.facing, nx >> 1, ny >> 1, 0)
+        if total != hist[CT_JOE]:
+            ny = y
+            self.vy = 0
+        self.x, self.y = nx, ny
+        cb_write(cbm, 19 + self.facing, nx >> 1, ny >> 1, CT_WALL)
+
+    def draw(self, surface, sprites, frame):
+        x, y = self.x, self.y
+        glow_a = sprites[50 + (frame & 1) + self.thrust]            # under the body
+        surface.blit(glow_a["surf"], (x + glow_a["x_off"], y + 10 + glow_a["y_off"]))
+        glow_b = sprites[52 + ((~frame) & 1)]                       # trailing behind
+        gx = x - (17 * self.facing - 17)
+        surface.blit(glow_b["surf"], (gx + glow_b["x_off"], y - 2 + glow_b["y_off"]))
+        body = sprites[39 + self.facing]
+        surface.blit(body["surf"], (x + body["x_off"], y + body["y_off"]))
+
+
+class Ball(Entity):
+    """Handler 0x15A2 (spawned by ball_generator). Electric ball (sprites 42-45) that walks a
+    Bresenham line toward Joe, re-aiming every 25 updates. Writes shape 16 as type 6 and
+    restores the surrounding ring (shape 17) every update — touching it kills Joe. It explodes
+    when anything (a shot's erase, Joe's marker, another ball's ring) disturbs its own bytes."""
+    interval = 16
+
+    @staticmethod
+    def can_spawn(g, x, y):
+        return cb_check(g.cbm, 2, x >> 1, y >> 1, 0)[0] == 0      # init check at 0x15C8
+
+    def __init__(self, g, x, y):
+        super().__init__(x, y, g.tick)
+        self.retarget = 1        # [DI+0x1E]
+        self.err = 0             # [DI+0x1A]
+        self.frame = 0           # [DI+0x1C]
+        self.frame_acc = 0       # [DI+0x1D]
+        self.sx = self.sy = 1    # [DI+0x16] / [DI+0x18]
+        self.adx = self.ady = 0  # [DI+0x10] / [DI+0x12]
+        self.phase = 0           # [DI+0x1F]
+        self.sprite_idx = 42
+        cb_write(g.cbm, 16, self.x >> 1, self.y >> 1, CT_ENEMY)   # activate (0x1657)
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        x, y = self.x, self.y
+        hx, hy = x >> 1, y >> 1
+        self.retarget -= 1
+        if self.retarget == 0:
+            self.retarget = 25
+            self.sx = self.sy = 1
+            cx = int(g.player.x) - x
+            cy = int(g.player.y) - y
+            if cx <= 0:
+                cx = -cx
+                self.sx = -1
+            if cy <= 0:
+                cy = -cy
+                self.sy = -1
+            self.adx, self.ady = cx, cy
+        total, hist = cb_check(cbm, 16, hx, hy, CT_ENEMY)
+        if total:                                        # something intruded → explode (0x176A)
+            cb_restore_if(cbm, backup, 16, hx, hy, CT_ENEMY)
+            g.entities.append(EnemyExplosion(g, x, y, self.sprite_idx))
+            self.alive = False
+            return
+        cb_restore_if(cbm, backup, 16, hx, hy, CT_ENEMY)
+        nx, ny = x, y
+        if self.err <= 0:
+            self.err += self.ady
+            nx += self.sx
+            if self.phase:
+                self.phase = 0
+                self.next_time -= 7
+        else:
+            self.err -= self.adx
+            ny += self.sy
+            self.next_time += 3
+            if not self.phase:
+                self.phase = 1
+                self.next_time -= 7
+        if not in_room(nx, ny):
+            self.alive = False
+            return
+        total, hist = cb_check(cbm, 16, nx >> 1, ny >> 1, 0)
+        if total:
+            nx, ny = x, y
+            self.retarget = 1
+        self.x, self.y = nx, ny
+        hx, hy = nx >> 1, ny >> 1
+        cb_restore(cbm, backup, 17, hx, hy)
+        cb_write(cbm, 16, hx, hy, CT_ENEMY)
+        self.frame_acc += 22
+        if self.frame_acc >= 256:
+            self.frame_acc -= 256
+            self.frame = (self.frame + 1) & 3
+        self.sprite_idx = 42 + self.frame
+
+
+class Orb(Entity):
+    """Handler 0x25C1 (spawned by orb_generator). Aimed once at Joe on spawn, flies a straight
+    Bresenham line (sprite 50 at spawn, 51 in flight). Explodes on anything solid, restoring the
+    backup under its 5x3 shape (22) — which wipes Joe's marker and kills him."""
+    interval = 9
+
+    @staticmethod
+    def can_spawn(g, x, y):
+        return cb_check(g.cbm, 2, x >> 1, y >> 1, 0)[0] == 0      # init check at 0x2627
+
+    def __init__(self, g, x, y):
+        super().__init__(x, y, g.tick + 50)
+        self.err = 0
+        self.phase = 0
+        self.sx = self.sy = 1
+        cx = int(g.player.x) - x
+        cy = int(g.player.y) - y
+        if cx <= 0:
+            cx = -cx
+            self.sx = -1
+        if cy <= 0:
+            cy = -cy
+            self.sy = -1
+        self.adx, self.ady = cx, cy
+        self.sprite_idx = 50
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        x, y = self.x, self.y
+        nx, ny = x, y
+        if self.err <= 0:
+            self.err += self.ady
+            nx += self.sx
+            if self.phase:
+                self.phase = 0
+                self.next_time -= 3
+        else:
+            self.err -= self.adx
+            ny += self.sy
+            self.next_time += 1
+            if not self.phase:
+                self.phase = 1
+                self.next_time -= 3
+        if not in_room(nx, ny):
+            self.alive = False
+            return
+        total, hist = cb_check(cbm, 22, nx >> 1, ny >> 1, 0)
+        if total == 0:
+            self.x, self.y = nx, ny
+            self.sprite_idx = 51
+        else:
+            cb_restore(cbm, backup, 22, nx >> 1, ny >> 1)
+            g.entities.append(EnemyExplosion(g, x, y, self.sprite_idx))
+            self.alive = False
+
+
+class Bird(Entity):
+    """Handler 0x199A (spawned by bird_generator). Red bird (sprites 29-32) rising 1px per
+    update. When Joe's marker is found in the 1-wide column above it (shape 15) it fires a
+    laser (sprite 25/26 flickering, 89px tall) for 10 updates; the DRAW_VISUAL of that column
+    wipes Joe's marker and kills him. Vanishes silently on hitting a ceiling (type 1)."""
+    interval = 20
+
+    @staticmethod
+    def can_spawn(g, x, y):
+        return cb_check(g.cbm, 2, x >> 1, y >> 1, 0)[0] == 0      # init check at 0x19C0
+
+    def __init__(self, g, x, y):
+        super().__init__(x, y, g.tick)
+        self.sprite_idx = 29     # [DI+0x1C]
+        self.frame_acc = 0       # [DI+0x1D]
+        self.laser = 0           # [DI+0x16]
+        cb_write(g.cbm, 2, self.x >> 1, self.y >> 1, CT_ENEMY)   # activate (0x1A54)
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        x, y = self.x, self.y
+        hx, hy = x >> 1, y >> 1
+        if self.laser == 0:
+            total, hist = cb_check(cbm, 15, hx, hy, 0)
+            if hist[CT_JOE]:
+                self.laser = 10
+                cb_restore(cbm, backup, 15, hx, hy)
+        total, hist = cb_check(cbm, 2, hx, hy, CT_ENEMY)
+        if total:                                        # intruded → explode (0x1B42)
+            cb_restore_if(cbm, backup, 2, hx, hy, CT_ENEMY)
+            g.entities.append(EnemyExplosion(g, x, y, self.sprite_idx))
+            self.alive = False
+            return
+        cb_restore_if(cbm, backup, 2, hx, hy, CT_ENEMY)
+        ny = y - 1
+        if not in_room(x, ny):
+            self.alive = False
+            return
+        total, hist = cb_check(cbm, 2, hx, ny >> 1, 0)
+        if total:
+            if hist[CT_WALL]:
+                self.alive = False                       # hit ceiling: hide + destroy (0x1B77)
+                return
+            ny = y
+        self.y = ny
+        cb_write(cbm, 2, hx, ny >> 1, CT_ENEMY)
+        self.frame_acc += 0x2A
+        if self.frame_acc >= 256:
+            self.frame_acc -= 256
+            self.sprite_idx += 1
+            if self.sprite_idx >= 33:
+                self.sprite_idx = 29
+        if self.laser:
+            self.laser -= 1
+
+    def draw_laser(self, surface, sprites, frame):
+        if self.laser:
+            sp = sprites[25 + (frame & 1)]
+            surface.blit(sp["surf"], (self.x + sp["x_off"], self.y + sp["y_off"]))
+
+
+class Generator(Entity):
+    """Common base for the three generators (object types 11/12/20). Position is the tile's
+    top-left + (15, 11), i.e. the center of the 2x2 tile block the generator occupies."""
+    FRAMES = ()
+
+    def __init__(self, g, tile):
+        self.col, self.row = tile % MAP_COLS, tile // MAP_COLS
+        super().__init__(self.col * TILE_W + 15, self.row * TILE_H + 11, g.tick)
+        self.frame = None
+
+    def draw(self, surface, sprites, frame):
+        pass
+
+    def draw_tiles(self, surface, tile_surfs):
+        """MODIFY_SCREEN_MAP (0x04D2): background-layer 2x2 tile replacement, drawn opaque."""
+        if self.frame is None:
+            return
+        tiles = self.FRAMES[self.frame]
+        for i, (dc, dr) in enumerate(((0, 0), (1, 0), (0, 1), (1, 1))):
+            ti = tiles[i]
+            if ti < len(tile_surfs):
+                surface.blit(tile_surfs[ti], ((self.col + dc) * TILE_W, (self.row + dr) * TILE_H))
+
+
+class BallGen(Generator):
+    """Object type 12, handler 0x14F5. Counts down 4-7 updates (then 8 between balls); frames
+    1-3 of table DS:0x31BF play on the last three counts, a ball spawns at zero if the spot
+    (shape 16) is clear, otherwise it retries next update."""
+    interval = 257
+    FRAMES = ((506, 507, 526, 527), (508, 509, 528, 529), (546, 547, 566, 567), (548, 549, 568, 569))
+
+    def __init__(self, g, tile):
+        super().__init__(g, tile)
+        self.countdown = random.randrange(4) + 4
+
+    def update(self, g):
+        c = self.countdown - 1
+        if c == 0:
+            if cb_check(g.cbm, 16, self.x >> 1, self.y >> 1, 0)[0]:
+                return                                  # blocked: countdown not stored, retry
+            if Ball.can_spawn(g, self.x, self.y):
+                g.entities.append(Ball(g, self.x, self.y))
+            self.countdown = 8
+            self.frame = 0
+        else:
+            self.countdown = c
+            if c <= 3:
+                self.frame = 4 - c
+
+
+class OrbGen(Generator):
+    """Object type 20, handler 0x2526. Counts down 4-17 updates (then 18 between orbs); the
+    background tiles pulse through table DS:0x3233 indexed by the countdown value."""
+    interval = 43
+    _A, _B, _C, _D, _E, _F = ((622, 623, 642, 643), (624, 625, 644, 645), (626, 627, 646, 647),
+                              (628, 629, 648, 649), (630, 631, 650, 651), (632, 633, 652, 653))
+    FRAMES = (_F, _E, _D, _F, _E, _D, _C, _B, _A, _B, _C, _B, _A, _B, _C, _B, _A, _B)
+
+    def __init__(self, g, tile):
+        super().__init__(g, tile)
+        self.countdown = random.randrange(14) + 4
+
+    def update(self, g):
+        c = self.countdown - 1
+        if c == 0:
+            if Orb.can_spawn(g, self.x, self.y):
+                g.entities.append(Orb(g, self.x, self.y))
+            self.countdown = 18
+            self.frame = 0
+        else:
+            self.countdown = c
+            self.frame = c
+
+
+class BirdGen(Generator):
+    """Object type 11, handler 0x1488. Releases a bird every 1511 ticks (~1.3s), first one
+    after a random delay. No tile animation."""
+    interval = 1511
+
+    def __init__(self, g, tile):
+        super().__init__(g, tile)
+        self.next_time = g.tick + random.randrange(1511)
+
+    def update(self, g):
+        if Bird.can_spawn(g, self.x, self.y):
+            g.entities.append(Bird(g, self.x, self.y))
+
+
+
+# ---------------------------------------------------------------------------------------------
+# Sound — GAME.EXE's sample mixer, decoded from the binary (see RESUME_STATE.md, "Sound")
+#
+#   DS00.DAT      = the five DRAW/LIST samples, converted to 6-bit (0-63, silence 0x20) and
+#                   padded to 256-byte blocks, behind a table of paragraph (16-byte) offsets.
+#   PLAY_SOUND    = 0x02DC: AX = sound id → ES:SI/CX from that table → INT 62h DX=4.
+#   START_SOUND   = 0x42B3 (INT 62h DX=4): takes the mixer channel with the fewest blocks left.
+#   SOUND_MIXER   = 0x4308: every 32 counter ticks sums the 4 channels (silence = 0x20 each)
+#                   into a 256-sample buffer, maps the sum through a table that is linear for
+#                   ±31 around 0x80 and clips beyond, then the ISR plays one sample per PIT
+#                   interrupt at 1193182/128 Hz (the speaker driver runs at twice that and
+#                   repeats each sample, so every driver sounds the same).
+# Drivers (GAME.EXE N): 0/1 no sound, 2 internal speaker (default), 3 Covox Speech Thing,
+# 4 Covox Sound Master II. There is no Sound Blaster code.
+# ---------------------------------------------------------------------------------------------
+SOUND_RATE = 1193182 / 128                     # 9321.7 Hz
+SND_EXPLOSION, SND_SHOOT, SND_HELP, SND_TRANSPORTER, SND_THANKS = range(5)
+SOUND_NAMES = ("explosion", "shoot", "help me", "transporter", "thank you")
+SOUND = None                                   # the active SoundBank, set by its constructor
+
+
+def play_sound(idx):
+    """PLAY_SOUND 0x02DC. Safe to call before the bank exists or when sound is off."""
+    if SOUND is not None:
+        SOUND.play(idx)
+
+
+class SoundBank:
+    """Loads DS00.DAT into pygame Sounds and reproduces the original's 4-channel mixer."""
+    CHANNELS = 4
+
+    def __init__(self, enabled=True):
+        global SOUND
+        SOUND = self
+        self.enabled = False
+        self.sounds = []
+        self.history = []                      # ids played, newest last (for tests/debugging)
+        self._ends = [0.0] * self.CHANNELS
+        if not enabled:
+            return
+        try:
+            pygame.mixer.quit()
+            pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+            info = pygame.mixer.get_init()
+        except pygame.error:
+            info = None
+        if not info:
+            return
+        rate, fmt, nch = info
+        data = load_raw("DS00.DAT")
+        offs = [struct.unpack_from('<H', data, 2 * i)[0] * 16 for i in range(6)]
+        for i in range(5):
+            self.sounds.append(self._convert(data[offs[i]:offs[i + 1]], rate, nch))
+        pygame.mixer.set_num_channels(self.CHANNELS)
+        self._channels = [pygame.mixer.Channel(i) for i in range(self.CHANNELS)]
+        self.enabled = True
+
+    @staticmethod
+    def _convert(raw, rate, nch):
+        """6-bit sample block → 16-bit PCM at the mixer rate. The output table (0x3EB6) is
+        linear over ±31 around the 0x20 centre, so one full-scale sample spans the whole range;
+        pygame's own clipping then stands in for the table's clip when channels overlap.
+        Zero-order hold (sample repeat) keeps the hardware's 9.3 kHz character."""
+        step = SOUND_RATE / rate
+        n_out = int(len(raw) / step)
+        out = array('h')
+        scale = 32767 // 31
+        for j in range(n_out):
+            v = raw[int(j * step)] - 0x20
+            v = -31 if v < -31 else (31 if v > 31 else v)
+            out.append(v * scale)
+        if nch == 2:
+            st = array('h')
+            for v in out:
+                st.append(v); st.append(v)
+            out = st
+        return pygame.mixer.Sound(buffer=out.tobytes())
+
+    def play(self, idx):
+        self.history.append(idx)
+        del self.history[:-64]
+        if not self.enabled:
+            return
+        now = time.monotonic()
+        # START_SOUND 0x42B3: the channel with the least time left is taken, finished or not.
+        ch = min(range(self.CHANNELS), key=lambda c: max(0.0, self._ends[c] - now))
+        snd = self.sounds[idx]
+        self._channels[ch].play(snd)
+        self._ends[ch] = now + snd.get_length()
+
+
+def sound_enabled_from_args(argv):
+    """Mirror the original's `GAME.EXE N`: 0 or 1 = no sound, anything else = sound on.
+    JPJ_SOUND=0 in the environment also turns it off."""
+    if os.environ.get("JPJ_SOUND", "1") == "0":
+        return False
+    return not (len(argv) > 1 and argv[1] in ("0", "1"))
+
 
 class Explosion:
     """Wall-hit explosion from original GAME.EXE handler 0x1103.
@@ -230,6 +850,7 @@ class Explosion:
         self.sprite_idx = 33
         self.timer = self.FRAME_HOLD
         self.alive = True
+        play_sound(SND_EXPLOSION)                # 0x1151
 
     def update(self):
         self.timer -= 1
@@ -255,20 +876,32 @@ class Shot:
         self.alive = True
         self.explosions = explosions  # shared list to append explosions to
 
-    def update(self, cbm):
+    INTERVAL = 15   # [DI+8] = 0x0F ticks between moves
+
+    def update(self, cbm, backup=None):
+        """One render frame: step every 15 ticks (GAME.EXE 0x1084)."""
         if not self.alive:
             return
-        self.x += self.direction * 2
-        # Check screen bounds
-        if self.x < 0 or self.x >= SCREEN_W:
-            self.alive = False
-            return
-        # Check wall collision using half-res bitmap (matching SH00.DAT shape 1: 4×2)
-        hx, hy = int(self.x) // 2, int(self.y) // 2
-        if 0 <= hx < HALF_W and 0 <= hy < HALF_H and cbm[hy * HALF_W + hx]:
-            self.explosions.append(Explosion(self.x, self.y))
-            self.alive = False
-            return
+        self.acc = getattr(self, "acc", 0.0) + TICKS_PER_FRAME
+        while self.alive and self.acc >= self.INTERVAL:
+            self.acc -= self.INTERVAL
+            self.x += self.direction * 2
+            if self.x < 0 or self.x >= SCREEN_W:
+                self.alive = False
+                return
+            hx, hy = int(self.x) >> 1, int(self.y) >> 1
+            total, hist = cb_check(cbm, 1, hx, hy, 0)
+            if total == 0:
+                continue
+            if hist[CT_JOE] == 0:
+                # Hit a wall or enemy: restore backup under the 4x2 shape (this is what wounds
+                # a ball/bird — their own bytes get wiped), spawn explosion, die.
+                cb_restore(cbm, backup, 1, hx, hy)
+                self.explosions.append(Explosion(self.x, self.y))
+                self.alive = False
+            elif total != hist[CT_JOE]:
+                self.alive = False          # Joe plus something else: vanish silently
+            # only Joe under the shot: keep flying
 
     def draw(self, surface, sprites):
         if self.alive and self.sprite_idx < len(sprites):
@@ -295,7 +928,7 @@ class Player:
         frames = JOE_FRAMES_R if self.direction > 0 else JOE_FRAMES_L
         return sprites[frames[self.anim_frame]]
 
-    def update(self, cbm, sprites, pipe_floors=(), pipe_ceilings=()):
+    def update(self, cbm, sprites, pipe_floors=(), pipe_ceilings=(), backup=None):
         sp = self._get_sprite(sprites)
 
         # --- Horizontal movement ---
@@ -386,7 +1019,7 @@ class Player:
         if self.fire_cooldown > 0:
             self.fire_cooldown -= 1
         for s in self.shots:
-            s.update(cbm)
+            s.update(cbm, backup)
         self.shots = [s for s in self.shots if s.alive]
         for e in self.explosions:
             e.update()
@@ -398,6 +1031,7 @@ class Player:
             gun_y = self.y + 2
             self.shots.append(Shot(gun_x, gun_y, self.direction, self.explosions))
             self.fire_cooldown = 8
+            play_sound(SND_SHOOT)                # 0x0EF8
 
     def draw(self, surface, sprites):
         sp = self._get_sprite(sprites)
@@ -424,7 +1058,7 @@ class Player:
 class JetPackJoe:
     def __init__(self):
         pygame.init()
-        pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
+        self.sound = SoundBank(sound_enabled_from_args(sys.argv))
         self.window = pygame.display.set_mode((WIN_W, WIN_H))
         pygame.display.set_caption("Jet Pack Joe — Joe Lowe (1990s)")
         self.screen = pygame.Surface((SCREEN_W, TOTAL_H))
@@ -443,11 +1077,15 @@ class JetPackJoe:
         ]
 
         self.current_level = 0
-        self.build_assets()
-        self.current_room = 0
-        self.player = Player(160, 120)
         self.time_counter = 0
-        self.game_over = False
+        self.tick = 0.0          # object counter (INT 62h DX=0), advanced TICKS_PER_FRAME per frame
+        self.frame_no = 0        # render frame number ([0x2361]) — drives sprite flicker
+        self.entities = []       # enemies, generators, enemy explosions in the current room
+        self.last_room = None
+        self.joe_marked = None   # the cbm Joe's type-14 marker is currently stamped in
+        self.death = None        # Joe death animation state (GAME.EXE 0x0F05)
+        self.cbm = self.cbm_bak = None
+        self.set_level(0)
 
     def build_assets(self):
         pal = self.levels[self.current_level]["pal"]
@@ -492,6 +1130,9 @@ class JetPackJoe:
         first_off = struct.unpack_from('<H', lv_data, 0)[0]
         # Room 68's offset + 8 (skip header) = start of trailer data
         trailer_off = struct.unpack_from('<H', lv_data, 68 * 2)[0] + 8
+        self.captive_count = struct.unpack_from('<H', lv_data, trailer_off)[0]
+        self.beam_tile = struct.unpack_from('<H', lv_data, trailer_off + 6)[0]
+        # Beam-in will be started in set_level after player is created
         trailer_pos = trailer_off + 8  # skip 4 header words (captive count, timer, room, value)
         while trailer_pos + 1 < len(lv_data):
             sid = struct.unpack_from('<H', lv_data, trailer_pos)[0]
@@ -571,7 +1212,7 @@ class JetPackJoe:
             for obj in self.room_objects[room_idx]:
                 if obj["type"] in (6, 7) and "fg_tile" in obj:
                     fg_overrides[obj["params"][0]] = obj["fg_tile"]
-                if obj["type"] in (1, 2, 3, 4, 5, 9, 10) and "fg_tiles" in obj:
+                if obj["type"] in (1, 2, 3, 4, 5, 9, 10, 15, 16) and "fg_tiles" in obj:
                     fg_overrides.update(obj["fg_tiles"])
         fg_bytes = map_data[base + 640:base + 960]
         for i, b in enumerate(fg_bytes):
@@ -721,6 +1362,15 @@ class JetPackJoe:
                         ts.set_colorkey(None)
                     ty += TILE_H
                     ti_idx += 1
+                # DRAW_VISUAL shape 8 (6w x 35h, cols 1-6, rows 1-35): restore backup first.
+                # This wipes Joe's type-14 marker if he touches the field — that is how it kills.
+                if backup:
+                    for r in range(1, 36):
+                        by = y_top // 2 + r
+                        for c in range(1, 7):
+                            bx = hx + c
+                            if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                                cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
                 # Write collision for active vertical field
                 # Shape 7: 2w at cols 3-4, alternating rows 0-34
                 for r in range(0, 35, 2):
@@ -857,8 +1507,9 @@ class JetPackJoe:
                                 dc, dr = toff % 20, toff // 20
                                 fg_idx = (row + dr) * MAP_COLS + (col + dc)
                                 obj.setdefault("fg_tiles", {})[fg_idx] = ti if ti else 0
-                        else:
-                            # Animation complete — clear collision walls
+                        elif not obj.get("done"):
+                            # Animation complete — clear collision walls, decrement captive count (once)
+                            obj["done"] = True
                             cbm = self.get_collision_bitmap(room_idx)[0]
                             hx, hy = obj["x"] // 2, obj["y"] // 2
                             for r in range(18):
@@ -866,6 +1517,7 @@ class JetPackJoe:
                                     bx, by = hx + c, hy + r
                                     if 0 <= bx < HALF_W and 0 <= by < HALF_H:
                                         cbm[by * HALF_W + bx] = 0
+                            self.captive_count = max(0, self.captive_count - 1)
                         sp = None
                     else:
                         # Active cage: draw captive + force field, check collision
@@ -896,6 +1548,8 @@ class JetPackJoe:
                                 break
                         if touching:
                             obj["disappear"] = 0  # start disappear animation
+                            play_sound(SND_THANKS)        # 0x1468
+                            play_sound(SND_TRANSPORTER)   # 0x1F62
                         sp = None
             elif ot == 5:  # door — slides up/down based on switch state
                 DOOR_FRAMES = [
@@ -989,10 +1643,124 @@ class JetPackJoe:
                 row_t = loc // MAP_COLS
                 surface.blit(self.tile_surfs[ti], (col_t * TILE_W, row_t * TILE_H))
                 sp = None
-            elif ot == 14:  # sentry — sprites 29-32
-                sp = self.sprites[29 + (obj["timer"] // 8) % 4]
-            elif ot == 13:  # glow_ball — sprites 35-37
-                sp = self.sprites[35 + (obj["timer"] // 8) % 3]
+            elif ot in (15, 16):  # plates — oscillating collision walls (GAME.EXE 0x17A0/0x189B)
+                is_right = (ot == 16)
+                var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
+                tile_loc = obj["params"][0]
+                base_x = x  # BLOCK_TO_XY result stored at init
+                # Position table: 52 entries × 3 words [x_offset, anim_frame, tile_col]
+                PLATE_POS = [
+                    (0,0,0),(2,1,0),(4,2,0),(6,3,0),(8,4,0),(10,5,0),(12,6,0),(14,7,0),(16,8,0),
+                    (18,1,1),(20,2,1),(22,3,1),(24,4,1),(26,5,1),(28,6,1),(30,7,1),(32,8,1),
+                    (34,1,2),(36,2,2),(38,3,2),(40,4,2),(42,5,2),(44,6,2),(46,7,2),(48,8,2),
+                    (50,1,3),(52,2,3),
+                    (50,1,3),(48,0,3),(46,7,2),(44,6,2),(42,5,2),(40,4,2),(38,3,2),(36,9,2),(34,1,2),
+                    (32,0,2),(30,7,1),(28,6,1),(26,5,1),(24,4,1),(22,3,1),(20,9,1),(18,1,1),
+                    (16,0,1),(14,7,0),(12,6,0),(10,5,0),(8,4,0),(6,3,0),(4,9,0),(2,1,0),
+                ]
+                LEFT_FRAMES = [
+                    [(0,72),(20,72),(40,72),(60,72),(80,72)],
+                    [(0,52),(20,51),(40,52),(60,51),(80,52)],
+                    [(0,191),(20,190),(40,191),(60,190),(80,191)],
+                    [(0,171),(20,170),(40,171),(60,170),(80,171),(1,172),(21,172),(41,172),(61,172),(81,172)],
+                    [(0,151),(20,150),(40,151),(60,150),(80,151),(1,152),(21,152),(41,152),(61,152),(81,152)],
+                    [(0,131),(20,130),(40,131),(60,130),(80,131),(1,132),(21,132),(41,132),(61,132),(81,132)],
+                    [(0,111),(20,110),(40,111),(60,110),(80,111),(1,112),(21,112),(41,112),(61,112),(81,112)],
+                    [(0,91),(20,90),(40,91),(60,90),(80,91),(1,92),(21,92),(41,92),(61,92),(81,92)],
+                    [(0,0),(20,71),(40,0),(60,71),(80,0),(1,72),(21,72),(41,72),(61,72),(81,72)],
+                    [(0,191),(20,190),(40,191),(60,190),(80,191),(1,0),(21,0),(41,0),(61,0),(81,0)],
+                ]
+                RIGHT_FRAMES = [
+                    [(0,191),(20,191),(40,191),(60,191),(80,191)],
+                    [(0,52),(20,53),(40,52),(60,53),(80,52)],
+                    [(0,72),(20,73),(40,72),(60,73),(80,72)],
+                    [(0,92),(20,93),(40,92),(60,93),(80,92),(-1,91),(19,91),(39,91),(59,91),(79,91)],
+                    [(0,112),(20,113),(40,112),(60,113),(80,112),(-1,111),(19,111),(39,111),(59,111),(79,111)],
+                    [(0,132),(20,133),(40,132),(60,133),(80,132),(-1,131),(19,131),(39,131),(59,131),(79,131)],
+                    [(0,152),(20,153),(40,152),(60,153),(80,152),(-1,151),(19,151),(39,151),(59,151),(79,151)],
+                    [(0,172),(20,173),(40,172),(60,173),(80,172),(-1,171),(19,171),(39,171),(59,171),(79,171)],
+                    [(0,0),(20,71),(40,0),(60,71),(80,0),(-1,191),(19,191),(39,191),(59,191),(79,191)],
+                    [(0,72),(20,73),(40,72),(60,73),(80,72),(-1,0),(19,0),(39,0),(59,0),(79,0)],
+                ]
+                ANIM_FRAMES = RIGHT_FRAMES if is_right else LEFT_FRAMES
+                obj["timer"] += 1
+                cbm = self.get_collision_bitmap(room_idx)[0]
+                backup = self.cbm_backup.get(room_idx)
+                hy = y // 2
+                cur_hx = obj.get("plate_hx", x // 2)
+                if obj["timer"] % 4 == 0:
+                    # Full update: erase old collision, advance state, write new
+                    old_hx = cur_hx
+                    if backup:
+                        for r in range(0, 30, 2):
+                            by = hy + r
+                            for c in range(6):
+                                bx = old_hx + c
+                                if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                                    cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
+                    val = (self.switch_state[var_id] + 1) & 0xFF
+                    if val >= 52:
+                        val = 0
+                    self.switch_state[var_id] = val
+                    x_off, anim_frame, tile_col = PLATE_POS[val]
+                    col = tile_loc % MAP_COLS
+                    row = tile_loc // MAP_COLS
+                    base_tile = tile_loc + tile_col if not is_right else tile_loc - tile_col
+                    for toff, ti in ANIM_FRAMES[anim_frame]:
+                        fg_idx = base_tile + toff
+                        if 0 <= fg_idx < MAP_COLS * MAP_ROWS:
+                            obj.setdefault("fg_tiles", {})[fg_idx] = ti
+                    # Trail fill: write tile 71 to fg map at rows 1 and 3 below tile_loc
+                    # Left plate fills rightward, right plate fills leftward
+                    fg = obj.setdefault("fg_tiles", {})
+                    for c in range(tile_col):
+                        tc = tile_loc + c if not is_right else tile_loc - c
+                        for row_off in (20, 60):
+                            idx = tc + row_off
+                            if 0 <= idx < MAP_COLS * MAP_ROWS:
+                                fg[idx] = 71
+                    new_cx = base_x + x_off
+                    if is_right:
+                        new_cx = base_x - x_off + 4
+                    cur_hx = new_cx // 2
+                    obj["plate_hx"] = cur_hx
+                # Draw plate tiles via fg_overrides in render_foreground (with colorkey)
+                sp = None
+                continue
+            elif ot == 14:  # sentry — a live Sentry entity is spawned in enter_room()
+                continue
+            elif ot == 13:  # glow_ball — GAME.EXE 0x134D via shared field handler 0x1E3C
+                # Not a sprite: a 2x2 foreground tile animation (table DS:0x3BA9) with a hollow
+                # ring collision (shape 5 written, shape 6 erased each update). Frame 4 is the
+                # dormant look drawn once when the switch turns it off.
+                GLOW_FRAMES = ((94, 95, 114, 115), (96, 97, 116, 117), (134, 135, 154, 155),
+                               (136, 137, 156, 157), (138, 139, 158, 159))
+                switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
+                col = obj["params"][0] % MAP_COLS
+                row = obj["params"][0] // MAP_COLS
+                hx, hy = (col * TILE_W) >> 1, (row * TILE_H) >> 1
+                cbm = self.get_collision_bitmap(room_idx)[0]
+                backup = self.cbm_backup.get(room_idx)
+                if self.switch_state[switch_id] == 0:
+                    if obj.get("field_active"):
+                        obj["field_active"] = False
+                        obj["gb_dormant"] = True
+                        cb_restore(cbm, backup, 5, hx, hy)
+                    frame = 4 if obj.get("gb_dormant") else None
+                else:
+                    frame = (obj["timer"] // 4) % 4
+                    cb_restore(cbm, backup, 6, hx, hy)      # DRAW_VISUAL ring: wipes Joe's marker
+                    cb_write(cbm, 5, hx, hy, CT_WALL)       # DRAW_COLLISION
+                    obj["field_active"] = True
+                if frame is not None:
+                    for i, (dc, dr) in enumerate(((0, 0), (1, 0), (0, 1), (1, 1))):
+                        ti = GLOW_FRAMES[frame][i]
+                        if ti < len(self.tile_surfs):
+                            ts = self.tile_surfs[ti]
+                            ts.set_colorkey((0, 0, 0))
+                            surface.blit(ts, ((col + dc) * TILE_W, (row + dr) * TILE_H))
+                            ts.set_colorkey(None)
+                continue
             if sp:
                 surface.blit(sp["surf"], (x + sp["x_off"], y + sp["y_off"]))
         # Beam-out/beam-in animation (cage disappear frames, DS:0x3389)
@@ -1028,7 +1796,9 @@ class JetPackJoe:
                     dc, dr = toff % 20, toff // 20
                     px = (col + dc) * TILE_W
                     py = (row + dr) * TILE_H
-                    surface.blit(self.tile_surfs[ti], (px, py))
+                    ts = self.tile_surfs[ti]
+                    ts.set_colorkey((0, 0, 0))
+                    surface.blit(ts, (px, py))
             active_beam["timer"] += 1
             if active_beam["timer"] >= 4:
                 active_beam["timer"] = 0
@@ -1036,27 +1806,36 @@ class JetPackJoe:
                     # Beam-out: frames 0→16 (forward), Joe hidden at frame 12
                     self.beam_out["frame"] += 1
                     if self.beam_out["frame"] > 16:
-                        # Beam-out done → teleport Joe → start beam-in
                         bo = self.beam_out
-                        dest_room = bo["dest_room"]
-                        dest_tile = bo["dest_tile"]
-                        dcol = dest_tile % MAP_COLS
-                        drow = dest_tile // MAP_COLS
-                        self.player.x = dcol * TILE_W + 23
-                        self.player.y = drow * TILE_H + 16
-                        self.player.vx = 0
-                        self.player.vy = 0
-                        if dest_room != self.current_room:
-                            self.current_room = dest_room
-                            self.player.shots.clear()
-                            self.player.explosions.clear()
-                        self.cbm_cache.pop(self.current_room, None)
-                        self.cbm_backup.pop(self.current_room, None)
-                        for other in self.room_objects.get(self.current_room, []):
-                            if other["type"] == 19:
-                                other["armed"] = False
                         self.beam_out = None
-                        self.beam_in = {"tile": dest_tile, "frame": 15, "timer": 0}
+                        if "dest_room" in bo:
+                            # Teleporter beam-out → teleport Joe → start beam-in
+                            dest_room = bo["dest_room"]
+                            dest_tile = bo["dest_tile"]
+                            dcol = dest_tile % MAP_COLS
+                            drow = dest_tile // MAP_COLS
+                            self.player.x = dcol * TILE_W + 23
+                            self.player.y = drow * TILE_H + 16
+                            self.player.vx = 0
+                            self.player.vy = 0
+                            if dest_room != self.current_room:
+                                self.current_room = dest_room
+                                self.player.shots.clear()
+                                self.player.explosions.clear()
+                            self.cbm_cache.pop(self.current_room, None)
+                            self.cbm_backup.pop(self.current_room, None)
+                            self.last_room = None   # force enter_room(): bitmap was rebuilt
+                            for other in self.room_objects.get(self.current_room, []):
+                                if other["type"] == 19:
+                                    other["armed"] = False
+                            self.beam_in = {"tile": dest_tile, "frame": 15, "timer": 0}
+                            play_sound(SND_TRANSPORTER)   # 0x2020 (beam-in object init)
+                        else:
+                            # Level-complete beam-out → advance level
+                            if self.current_level < 2:
+                                self.set_level(self.current_level + 1)
+                            else:
+                                self.game_won = True
                 else:
                     # Beam-in: frames 15→0 (reverse)
                     self.beam_in["frame"] -= 1
@@ -1090,6 +1869,7 @@ class JetPackJoe:
                     dest_tile = obj["params"][2] if len(obj["params"]) > 2 else 0
                     # Start beam-out at source, then beam-in at destination
                     src_tile = obj["params"][0]
+                    play_sound(SND_TRANSPORTER)       # 0x1F62 (beam-out object init)
                     self.beam_out = {"tile": src_tile, "frame": 0, "timer": 0,
                                      "dest_room": dest_room, "dest_tile": dest_tile,
                                      "src_room": room_idx}
@@ -1098,6 +1878,155 @@ class JetPackJoe:
                         if other["type"] == 19:
                             other["armed"] = False
                     return
+            elif obj["type"] in (15, 16):  # plates — write collision before player update
+                is_right = (obj["type"] == 16)
+                var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
+                base_x = obj["x"]
+                PLATE_POS = [
+                    (0,0,0),(2,1,0),(4,2,0),(6,3,0),(8,4,0),(10,5,0),(12,6,0),(14,7,0),(16,8,0),
+                    (18,1,1),(20,2,1),(22,3,1),(24,4,1),(26,5,1),(28,6,1),(30,7,1),(32,8,1),
+                    (34,1,2),(36,2,2),(38,3,2),(40,4,2),(42,5,2),(44,6,2),(46,7,2),(48,8,2),
+                    (50,1,3),(52,2,3),
+                    (50,1,3),(48,0,3),(46,7,2),(44,6,2),(42,5,2),(40,4,2),(38,3,2),(36,9,2),(34,1,2),
+                    (32,0,2),(30,7,1),(28,6,1),(26,5,1),(24,4,1),(22,3,1),(20,9,1),(18,1,1),
+                    (16,0,1),(14,7,0),(12,6,0),(10,5,0),(8,4,0),(6,3,0),(4,9,0),(2,1,0),
+                ]
+                val = self.switch_state[var_id]
+                if val < 52:
+                    x_off = PLATE_POS[val][0]
+                else:
+                    x_off = 0
+                new_cx = base_x + x_off if not is_right else base_x - x_off + 4
+                cur_hx = new_cx // 2
+                hy = obj["y"] // 2
+                cbm = self.get_collision_bitmap(room_idx)[0]
+                for r in range(0, 30, 2):
+                    by = hy + r
+                    for c in range(6):
+                        bx = cur_hx + c
+                        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                            cbm[by * HALF_W + bx] = 1
+
+    # ------------------------------------------------------------------
+    # Room entry, enemy scheduling, Joe's collision marker and death
+    # ------------------------------------------------------------------
+    def enter_room(self):
+        """Called whenever current_room changes. The original (0x0802) destroys every object of
+        the old room and re-runs the init handlers of the new room's object list, so enemies and
+        generator countdowns start fresh each visit."""
+        room = self.current_room
+        self.last_room = room
+        self.entities = []
+        self.joe_marked = None
+        self.cbm = self.get_collision_bitmap(room)[0]
+        self.cbm_bak = self.cbm_backup[room]
+        for obj in self.room_objects.get(room, []):
+            t = obj["type"]
+            tile = obj["params"][0]
+            if t == 10 and obj.get("disappear", -1) < 0:
+                play_sound(SND_HELP)                      # 0x1406: captive init
+            if t == 14:
+                var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
+                if self.switch_state[var_id] != 0:        # 0x232E: skipped if its variable is 0
+                    self.entities.append(Sentry(self, obj["x"], obj["y"]))
+            elif t == 11:
+                self.entities.append(BirdGen(self, tile))
+            elif t == 12:
+                self.entities.append(BallGen(self, tile))
+            elif t == 20:
+                self.entities.append(OrbGen(self, tile))
+
+    def update_entities(self):
+        """Main loop 0x06F8: run every object whose next_time has passed, as often as needed."""
+        room = self.current_room
+        self.cbm = self.get_collision_bitmap(room)[0]
+        self.cbm_bak = self.cbm_backup[room]
+        for e in list(self.entities):
+            n = 0
+            while e.alive and e.next_time <= self.tick and n < 8:
+                e.update(self)
+                e.next_time += e.interval
+                n += 1
+        self.entities = [e for e in self.entities if e.alive]
+
+    def draw_entities(self, surface):
+        """Enemy layer (sprite priority 3-5: below Joe). Generator tiles are background."""
+        for e in self.entities:
+            if isinstance(e, Generator):
+                e.draw_tiles(surface, self.tile_surfs)
+        for e in self.entities:
+            if not isinstance(e, Generator):
+                e.draw(surface, self.sprites, self.frame_no)
+
+    def joe_check_and_unmark(self, cbm, backup):
+        """Start of Joe's update (0x0CCC-0x0CF0). With his own type-14 marker still in place
+        from last frame, any byte under his shape that is neither 14 nor a wall (1) means
+        something killed him: a field/laser/orb/ring restored the backup (0) or an enemy wrote
+        its own type (6). Then erase his marker so movement checks don't see it."""
+        px, py = int(self.player.x), int(self.player.y)
+        hx, hy = px >> 1, py >> 1
+        if self.joe_marked is cbm:
+            total, hist = cb_check(cbm, 0, hx, hy, CT_JOE)
+            if total and total != hist[CT_WALL]:
+                if os.environ.get("JPJ_DEBUG"):
+                    print(f"DEATH at ({px},{py}) room {self.current_room}: bytes under Joe by type "
+                          f"{ {t: n for t, n in enumerate(hist) if n} }")
+                self.start_death()
+            cb_restore_if(cbm, backup, 0, hx, hy, CT_JOE)
+        self.joe_marked = None
+
+    def joe_mark(self):
+        """End of Joe's update (0x0E3B): DRAW_COLLISION(shape 0, type 14) at his position."""
+        cbm = self.get_collision_bitmap(self.current_room)[0]
+        cb_write(cbm, 0, int(self.player.x) >> 1, int(self.player.y) >> 1, CT_JOE)
+        self.joe_marked = cbm
+
+    def start_death(self):
+        """GAME.EXE 0x0F05: Joe's death sequence. First step after 80 ticks, then every 70."""
+        if self.death is not None:
+            return
+        self.death = {"frame": 0, "next": self.tick + 80, "sprite": None, "hidden": False}
+        self.player.thrusting = False
+        self.player.vx = 0
+        self.player.vy = 0
+        self.player.thrust_timer = 0
+
+    def update_death(self):
+        d = self.death
+        px, py = int(self.player.x), int(self.player.y)
+        while d["next"] <= self.tick:
+            d["next"] += 70
+            d["frame"] += 1
+            f = d["frame"]
+            if 1 <= f <= 15:
+                # Joe tumbles through his own 8 frames; small glow bursts around him
+                d["sprite"] = f & 7
+                self.player.explosions.append(Explosion(px + random.randrange(29) - 13,
+                                                        py + random.randrange(23) - 11))
+            elif 16 <= f <= 23:
+                # Debris sprites 46-49, each shown twice; wider glow bursts
+                d["sprite"] = 46 + (f - 16) // 2
+                self.player.explosions.append(Explosion(px + random.randrange(37) - 18,
+                                                        py + random.randrange(45) - 22))
+            elif f == 25:
+                d["hidden"] = True               # FREE_SPRITE of Joe (0x0FCD)
+            elif f >= 58:
+                self.finish_death()              # [0x305E] = 1: level loop exits (0x0FDB)
+                return
+        for e in self.player.explosions:
+            e.update()
+        self.player.explosions[:] = [e for e in self.player.explosions if e.alive]
+
+    def finish_death(self):
+        """The demo's caller (0x02C3) simply restarts the level on a lost life."""
+        self.death = None
+        lives = self.player.lives - 1
+        if lives <= 0:
+            self.player.lives = 0
+            self.game_over = True
+            return
+        self.set_level(self.current_level)
+        self.player.lives = lives
 
     def try_room_transition(self):
         """Check if player has left the screen and transition rooms.
@@ -1162,10 +2091,23 @@ class JetPackJoe:
             self.current_level = level
             self.build_assets()
             self.current_room = 0
-            self.player = Player(160, 120)
+            # Position Joe at beam-in tile (matching GAME.EXE 0x0C7E)
+            bcol = self.beam_tile % MAP_COLS
+            brow = self.beam_tile // MAP_COLS
+            self.player = Player(bcol * TILE_W + 23, brow * TILE_H + 16)
+            # Start beam-in animation (matching GAME.EXE 0x0C5B-0x0C78)
+            self.beam_in = {"tile": self.beam_tile, "frame": 15, "timer": 0}
+            play_sound(SND_TRANSPORTER)          # 0x0AFC
+            self.beam_out = None
             self.game_over = False
+            self.game_won = False
+            self.level_complete_timer = 0
             self.cbm_cache = {}
             self.cbm_backup = {}
+            self.entities = []
+            self.last_room = None
+            self.joe_marked = None
+            self.death = None
 
     def run(self):
         running = True
@@ -1178,7 +2120,7 @@ class JetPackJoe:
                     if event.key == pygame.K_ESCAPE:
                         running = False
                     elif event.key == pygame.K_r:
-                        self.player = Player(160, 120)
+                        self.set_level(self.current_level)
                         self.game_over = False
                     elif event.key == pygame.K_RIGHTBRACKET:
                         if self.current_room + 1 < self.num_rooms:
@@ -1188,6 +2130,10 @@ class JetPackJoe:
                             self.current_room -= 1
                     elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
                         self.set_level(event.key - pygame.K_1)
+                    elif event.key == pygame.K_t:
+                        self.set_level(1)
+                        self.current_room = 18
+                        self.beam_in = None
                     elif event.key == pygame.K_s:
                         n = 0
                         while os.path.exists(os.path.join(BASE, f"screenshot_{n:03d}.png")):
@@ -1197,10 +2143,15 @@ class JetPackJoe:
                         pygame.image.save(shot, os.path.join(BASE, fname))
                         print(f"Saved {fname}")
 
-            if not self.game_over:
+            if not self.game_over and not self.game_won:
+                self.tick += TICKS_PER_FRAME
+                self.frame_no += 1
+                if self.current_room != self.last_room:
+                    self.enter_room()
                 beaming = self.beam_out is not None or self.beam_in is not None
+                dying = self.death is not None
                 keys = pygame.key.get_pressed()
-                if not beaming:
+                if not beaming and not dying:
                     self.player.vx = 0
                     if keys[pygame.K_LEFT]:
                         self.player.vx = -MOVE_SPEED
@@ -1209,12 +2160,45 @@ class JetPackJoe:
                         self.player.vx = MOVE_SPEED
                         self.player.direction = 1
                     self.player.thrusting = keys[pygame.K_SPACE] or keys[pygame.K_UP]
-                if keys[pygame.K_z]:
-                    self.player.fire()
-                cbm, pipe_floors, pipe_ceilings = self.get_collision_bitmap(self.current_room)
-                self.player.update(cbm, self.sprites, pipe_floors, pipe_ceilings)
-                self.update_objects()
+                    if keys[pygame.K_z]:
+                        self.player.fire()
+                if dying:
+                    self.update_death()
+                elif not beaming:
+                    cbm, pipe_floors, pipe_ceilings = self.get_collision_bitmap(self.current_room)
+                    backup = self.cbm_backup[self.current_room]
+                    self.joe_check_and_unmark(cbm, backup)
+                    if self.death is None:
+                        self.update_objects()
+                        self.player.update(cbm, self.sprites, pipe_floors, pipe_ceilings, backup)
+                        # Crush check (0x0CFB-0x0D5B): if something moved into Joe, try the
+                        # original's 9 nudge positions; if none is free he dies.
+                        px, py = int(self.player.x), int(self.player.y)
+                        if joe_hits_bg(cbm, px, py):
+                            for ddx, ddy in CRUSH_NUDGES:
+                                if not joe_hits_bg(cbm, px + ddx, py + ddy):
+                                    self.player.x = px + ddx
+                                    self.player.y = py + ddy
+                                    break
+                            else:
+                                if os.environ.get("JPJ_DEBUG"):
+                                    print(f"CRUSHED at ({px},{py}) room {self.current_room}")
+                                self.start_death()
+                else:
+                    self.update_objects()
                 self.try_room_transition()
+                if self.current_room != self.last_room:
+                    self.enter_room()
+                if not beaming and self.death is None:
+                    self.joe_mark()
+                self.update_entities()
+                # Level completion: start beam-out when all captives rescued
+                if self.captive_count <= 0 and self.beam_out is None and self.level_complete_timer == 0:
+                    # Convert Joe's position to tile for beam-out (matching GAME.EXE 0x0C27)
+                    tile = (int(self.player.y) // TILE_H) * MAP_COLS + (int(self.player.x) // TILE_W)
+                    self.beam_out = {"tile": tile, "frame": 0, "timer": 0}
+                    play_sound(SND_TRANSPORTER)       # 0x1F62 via 0x0C27
+                    self.level_complete_timer = 1  # flag: beam-out started
                 if self.player.y > SCREEN_H:
                     self.player.lives -= 1
                     if self.player.lives <= 0:
@@ -1237,28 +2221,45 @@ class JetPackJoe:
         self.screen.fill((0, 0, 0))
         self.screen.blit(self.render_room(self.current_room), (0, 0))
         self.draw_objects(self.screen, self.current_room)
+        self.draw_entities(self.screen)
         if not self.game_over:
             joe_hidden = False
             if self.beam_out and self.beam_out["frame"] >= 12:
                 joe_hidden = True
-            if self.beam_in and self.beam_in["frame"] > 12:
+            if self.beam_in:
+                joe_hidden = True
+            if self.death is not None and self.death["hidden"]:
                 joe_hidden = True
             if not joe_hidden:
-                self.player.draw(self.screen, self.sprites)
+                if self.death is not None and self.death["sprite"] is not None:
+                    sp = self.sprites[self.death["sprite"]]
+                    self.screen.blit(sp["surf"], (int(self.player.x) + sp["x_off"],
+                                                  int(self.player.y) + sp["y_off"]))
+                else:
+                    self.player.draw(self.screen, self.sprites)
+        for e in self.entities:
+            if isinstance(e, Bird):
+                e.draw_laser(self.screen, self.sprites, self.frame_no)
         self.render_foreground(self.current_room, self.screen)
         # Draw explosions on top of everything (they occur at wall edges)
         if not self.game_over:
             for e in self.player.explosions:
                 e.draw(self.screen, self.sprites)
+        for e in self.entities:
+            if isinstance(e, EnemyExplosion):
+                e.draw_top(self.screen, self.sprites)
 
         bar_y = SCREEN_H
         pygame.draw.rect(self.screen, (0, 0, 0), (0, bar_y, SCREEN_W, STATUS_H))
         self.screen.blit(self.font.render(f"TIME: {self.player.time:03d}", False, (0, 255, 0)), (4, bar_y + 3))
-        self.screen.blit(self.font.render("JET PACK JOE", False, (0, 255, 0)), (SCREEN_W // 2 - 36, bar_y + 3))
+        self.screen.blit(self.font.render(f"Rescues Remaining: {self.captive_count:02d}", False, (0, 255, 0)), (SCREEN_W // 2 - 66, bar_y + 3))
         self.screen.blit(self.font.render(f"ROOM: {self.current_room:02d}", False, (0, 255, 0)), (SCREEN_W - 60, bar_y + 3))
 
         if self.game_over:
             go = self.font.render("GAME OVER - Press R", False, (255, 0, 0))
+            self.screen.blit(go, (SCREEN_W // 2 - go.get_width() // 2, SCREEN_H // 2))
+        elif self.game_won:
+            go = self.font.render("YOU WIN!", False, (255, 255, 0))
             self.screen.blit(go, (SCREEN_W // 2 - go.get_width() // 2, SCREEN_H // 2))
 
         pygame.transform.scale(self.screen, (WIN_W, WIN_H), self.window)
