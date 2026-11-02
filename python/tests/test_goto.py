@@ -49,6 +49,27 @@ def test_parse_start_arg():
         raise AssertionError("level 9 should be rejected")
 
 
+def test_no_enemies_flag_suppresses_spawns_but_keeps_hazards():
+    d = Driver()
+    g = d.g
+    g.enemies_enabled = False
+    g.set_level(2)
+    g.jump_to_room(11)            # sentry room
+    d.run(3)
+    assert not d.entities(J.Sentry)
+    g.jump_to_room(3)             # ball generators + glow balls
+    d.run(3)
+    assert not d.entities(J.BallGen)
+    assert any(o["type"] == 13 for o in g.room_objects[3]), "glow balls are hazards, still present"
+    g.jump_to_room(13)
+    d.run(3)
+    assert d.entities(J.SensorSwitch), "non-enemy objects still spawn"
+    g.enemies_enabled = True
+    g.last_room = None
+    d.run(3)
+    assert d.entities(J.Sentry), "toggling back on respawns the sentry"
+
+
 TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
 
 if __name__ == "__main__":

@@ -3003,3 +3003,6 @@ by `draw_entities`. From handler 0x2061:
   driver number, if given, goes first: `python3 jet_pack_joe.py 0 --start 3:13`).
 - All of these go through `JetPackJoe.jump_to_room`, which drops Joe on the nearest free spot
   so he never starts inside a wall; `tests/test_goto.py` checks every room of every level.
+- `--no-enemies` (or `JPJ_ENEMIES=0`) stops the sentry and the ball/orb/bird generators from
+  spawning; **E** toggles it in play and respawns the room. Hazards (glow balls, fields, plates)
+  are unaffected. The status bar shows "NO ENEMIES" while it is off.

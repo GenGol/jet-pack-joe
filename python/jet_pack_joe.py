@@ -1128,6 +1128,7 @@ class JetPackJoe:
         self.death = None        # Joe death animation state (GAME.EXE 0x0F05)
         self.cbm = self.cbm_bak = None
         self.goto_buf = None     # digits typed after G (debug "go to room"), None when inactive
+        self.enemies_enabled = "--no-enemies" not in sys.argv and os.environ.get("JPJ_ENEMIES", "1") != "0"
         self.set_level(0)
 
     def build_assets(self):
@@ -2000,6 +2001,8 @@ class JetPackJoe:
             tile = obj["params"][0]
             if t == 10 and obj.get("disappear", -1) < 0:
                 play_sound(SND_HELP)                      # 0x1406: captive init
+            if t in (11, 12, 14, 20) and not self.enemies_enabled:
+                continue                                  # debug: --no-enemies / E key
             if t == 14:
                 var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
                 if self.switch_state[var_id] != 0:        # 0x232E: skipped if its variable is 0
@@ -2219,6 +2222,10 @@ class JetPackJoe:
                         self.set_level(event.key - pygame.K_1)
                     elif event.key == pygame.K_g:
                         self.goto_buf = ""
+                    elif event.key == pygame.K_e:
+                        self.enemies_enabled = not self.enemies_enabled
+                        self.last_room = None             # respawn the room's objects
+                        print("enemies", "on" if self.enemies_enabled else "off")
                     elif event.key == pygame.K_t:
                         self.set_level(1)
                         self.current_room = 18
@@ -2343,6 +2350,8 @@ class JetPackJoe:
         self.screen.blit(self.font.render(f"TIME: {self.player.time:03d}", False, (0, 255, 0)), (4, bar_y + 3))
         if self.goto_buf is not None:
             self.screen.blit(self.font.render(f"GO TO ROOM: {self.goto_buf}_  (Enter / Esc)", False, (255, 255, 0)), (SCREEN_W // 2 - 90, bar_y + 3))
+        elif not self.enemies_enabled:
+            self.screen.blit(self.font.render("NO ENEMIES", False, (255, 255, 0)), (SCREEN_W // 2 - 30, bar_y + 3))
         else:
             self.screen.blit(self.font.render(f"Rescues Remaining: {self.captive_count:02d}", False, (0, 255, 0)), (SCREEN_W // 2 - 66, bar_y + 3))
         self.screen.blit(self.font.render(f"ROOM: {self.current_room:02d}", False, (0, 255, 0)), (SCREEN_W - 60, bar_y + 3))
