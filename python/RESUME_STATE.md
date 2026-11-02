@@ -2881,13 +2881,17 @@ the sentry chases and crushes; the vertical field kills on touch ({0: 11}); a sh
 (explosion with ghost sprite); the death animation runs 58 steps, restarts the level and
 decrements lives; normal level start and walking unaffected; 600 busy frames in 0.18 s.
 
-### Still not implemented
-- Sensor switch (type 18; 0x2061 decoded this session: CHECK(shape 4, BL=1) → if Joe bytes
-  present copy switch_state[sw2] into switch_state[sw1]; visual tile = 0x116 + (sw1?1:0) +
-  (sw2?0x14:0) + (touching ? 0x28 or 0x14 : 0) written to the screen map).
-- Plate crush death now happens automatically via the crush check (verify in L2 R18).
-- Exact Joe physics (10-tick updates) — Python keeps its tuned per-frame physics.
-- Sound, cutscenes, original status-bar font.
+### Still not implemented (re-verified against the binary 2026-11-01, see Session 7)
+- Sensor switch (type 18; 0x2061: init interval 0x80, params +0x1E = sw1, +0x1F = sw2; update
+  CHECK(shape 4, BL=1) → if Joe bytes present copy switch_state[sw2] into switch_state[sw1];
+  tile = 0x116 + (sw1 var set ? 1 : 0) + (sw2 var set ? 0x14 : 0) + (touching ? (sw1 var set ?
+  0x14 : 0x28) : 0), written to the screen map at the object's tile). Only in L3 R13 (×3).
+- Plate crush death: VERIFIED in L2 R18 — Joe hovering between the plates (y 60-119) is crushed;
+  standing on the floor below them he is not, which is correct.
+- Exact Joe physics: Joe's update 0x0CCC runs every 10 ticks (main loop 0x06BB, [0x23D2] += 10)
+  with gravity 41, thrust 82, clamp ±1000 — the same constants as the sentry. Python keeps its
+  tuned per-frame physics (GRAVITY 0.15, THRUST -0.35, MAX 3.0 px/frame).
+- Status-bar font and colours, cutscenes (see Session 7 verification).
 
 ### Headless test suite (added 2026-11-01)
 
@@ -2956,3 +2960,22 @@ Pass a test name to run one; set `JPJ_DEBUG=1` for tracebacks and death histogra
 - Off switch mirrors the original: `python3 jet_pack_joe.py 0` (or `1`) = no sound, or
   `JPJ_SOUND=0`. Default is sound on.
 - Tests: `python3 python/tests/test_sound.py` (bank loads, durations, each trigger).
+
+
+### Session 7 verification pass (2026-11-01)
+
+Cam asked for every claim in the "what remains" list to be verified against GAME.EXE rather
+than the notes. Results:
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| Sensor switch is the only unimplemented object type | TRUE | level data uses types 1-20; Python handles all but 18 |
+| Plate crush works in L2 R18 | TRUE | crushed at (126,65) between plates at hx 52-57 / 70-75 |
+| Joe updates every 10 ticks, same constants as sentry | TRUE | 0x06BB / 0x0D7F sub 0x52, 0x0DBF add 0x29, clamp 0x3E8 |
+| Sound = PC speaker tones, no asset files | FALSE | five samples in DS00.DAT, 4-channel mixer (Session 7 sound) |
+| Status bar uses a "green digital font from CHAR.ASM" | HALF | font is a bold 8x8 in GAME.EXE at CS:0x31EC (128 glyph pointers, 8 bytes/glyph, drawn by 0x350C in Mode X); labels and ROOM digits are attr 7 = palette 7 grey (42,42,42); only the TIME digits are attr 0x0A = palette 10 green (21,63,21) (0x09F7). Confirmed by dosbox_room_4_door_closed.png. Original string: `TIME: 000   JET PACK JOE DEMO   ROOM: 00`; the Python's "Rescues Remaining" (Fix 21) is an invention. |
+| JET.EXE holds the title/menu/intro | FALSE | JET.EXE == J1.EXE, a 7 KB launcher (memory/VGA/CPU checks, sound-driver arg, archive loader). All animation code is GAME.EXE's ANIM.ASM (RUN_ANIM etc. in the symbol table). |
+| Cutscenes exist | TRUE, data not extracted | anim table DS:0x3D12 → 4 entries {resource, palette, length}: FA00/PL00/140, FA01/PL00/200, FA02/PL01/3000, FA03/PL01/6000. JET.RSC TOC: jp00 bk00 cb00 ds00 fa00-fa03 pl00 pl01 sh00 sp00 lv/mp/pl 11-13; **jp00, fa00-fa03 and pl01 were never UNCRAMed**. |
+| When cutscenes play | PARTLY | 0x2750 (anim runner, AX<4) is called once with AX=1 at 0x02CD: after the FIRST time the level runner 0x05D1 returns with captives left (i.e. first death), then [0x2EE]=1 and the level restarts. Entry 0x01AD: `[cs:8](2) ; [cs:C](0) ; [cs:8](0) ; [cs:C](1) ; [cs:8](0) ; [cs:C](2) ; [cs:8](0) ; [cs:8](3) ; INT 61h` — [cs:C] is play-level(n) (0x0210 stores AX at [0x2BC], level table DS:0x2BE = pl/mp/lv 11-13); [cs:8] with 2 / 0 / 0 / 0 / 3 fits title / thumbs-up after each level / credits, but CS:0-F are loader-patched far pointers so this is inferred, not read. |
+| Muzzle flash exists | FALSE | fire handler 0x0EAA only creates the projectile (0xFE3) and plays sound 1; 0x0F05 is the death animation. |
+| Levels play in fixed sequence 1→2→3 | TRUE | entry sequence above; after level 3 the program exits to the launcher ("We hope you've enjoyed the game."). |
