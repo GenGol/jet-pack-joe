@@ -95,7 +95,9 @@ class Driver:
 
         def fake_events():
             self.frame += 1
-            if self.frame - start > limit or (until is not None and until(g)):
+            # The game processes QUIT at the top of a loop iteration and still runs that
+            # frame, so the QUIT poll is the n-th frame: run(n) executes exactly n frames.
+            if self.frame - start >= limit or (until is not None and until(g)):
                 return [pygame.event.Event(pygame.QUIT)]
             return []
 
@@ -106,7 +108,7 @@ class Driver:
             g.run()
         finally:
             pygame.event.get, pygame.key.get_pressed = saved
-        return self.frame - start - 1
+        return self.frame - start
 
     # --- inspection ----------------------------------------------------------------------
     def entities(self, cls=None):

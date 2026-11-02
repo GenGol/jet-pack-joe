@@ -1984,10 +1984,15 @@ same room (maze puzzles), some go between rooms.
 1. `CHECK_COLLISION(shape=13, X=tele_x, Y=tele_y)` — outer boundary (cage walls)
 2. `CHECK_COLLISION(shape=4, X=tele_x+16, Y=tele_y+12)` — inner trigger
 
-**Decision logic:**
-- Joe NOT in trigger → arm (unless on boundary → disarm)
-- Joe IN trigger AND NOT on boundary AND armed → TELEPORT
-- Joe IN trigger AND on boundary → skip (at edge, not centered)
+**Decision logic** (corrected 2026-11-01 — [DI+0x1D] is a BLOCKED flag, set to 1 at init):
+- Joe NOT in trigger → blocked = 1 if clear of the side columns, 0 if on them
+- Joe IN trigger AND NOT on the side columns AND blocked == 0 → TELEPORT, blocked = 1
+- Joe IN trigger AND on the side columns → skip
+So Joe must cross a side column (shape 13 = the cage-wall columns at x+2..5 / x+42..45) and
+then be within ~5 px of the centre at a 62-tick check. Materialising at the centre (beam-in)
+or dropping onto it from above never fires: that is the original's bounce-back guard, no
+"disarm on arrival" hack is needed. The earlier Python version had the sense inverted (it
+fired only after leaving upward and coming back down), which Cam hit in L3 R13.
 
 **Teleport action (0x22C5):**
 ```
@@ -3016,3 +3021,13 @@ backup (ES:0x4820) is the bare tile collision taken before any object writes, an
 handler re-DRAW_COLLISIONs shape 13 every update (0x142F). Now: backup is copied before the cage
 walls are added, and the active cage rewrites its four wall columns every frame; after the
 disappear animation they are cleared once and stay gone. Tests: `tests/test_cage.py`.
+
+
+### Teleporter re-ported as an entity (2026-11-01)
+`Teleporter(Entity)` (interval 0x3E, first check after random(0x3E)) runs in `update_entities`
+with Joe's marker present and uses `cb_check` on shapes 13 and 4 exactly like 0x2290; firing
+calls `JetPackJoe.start_teleport(obj)` (the old beam-out creation). The distance-box trigger,
+the `armed` keys and the arrival disarm loop are gone. Tests: `tests/test_teleport.py`
+(walk-in from each side fires, drop onto the centre does not, no bounce-back after arrival,
+return trip after stepping off through a side). Harness note: `Driver.run(n)` now runs
+exactly n frames (it used to run n+1).

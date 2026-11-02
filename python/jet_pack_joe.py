@@ -716,6 +716,34 @@ class SensorSwitch(Entity):
             surface.blit(tile_surfs[self.tile], (self.col * TILE_W, self.row * TILE_H))
 
 
+class Teleporter(Entity):
+    """Object type 19, handler 0x2219. Every 0x3E ticks (first after random(0x3E)) it CHECKs
+    shape 13 (the two side columns of the teleporter area, the cage-wall shape) at (x, y) and
+    shape 4 (the trigger) at (x+16, y+12), looking for Joe's marker bytes. [DI+0x1D] is a
+    BLOCKED flag, set at init:
+      not in trigger → blocked = not on the side columns   (crossing a side clears it)
+      in trigger, clear of the sides, not blocked → teleport, blocked = 1
+    So Joe must walk in through a side; materialising at the centre after a beam-in, or
+    dropping onto it from above, never fires it. That is the original's bounce-back guard."""
+    interval = 0x3E
+
+    def __init__(self, g, obj):
+        super().__init__(obj["x"], obj["y"], g.tick)
+        self.obj = obj
+        self.blocked = True                                   # 0x2289
+        self.next_time = g.tick + random.randrange(0x3E)      # 0x2262
+
+    def update(self, g):
+        hx, hy = self.x >> 1, self.y >> 1
+        on_side = cb_check(g.cbm, 13, hx, hy, 0)[1][CT_JOE] != 0
+        in_trigger = cb_check(g.cbm, 4, hx + 8, hy + 6, 0)[1][CT_JOE] != 0
+        if not in_trigger:
+            self.blocked = not on_side                        # 0x22E2
+        elif not on_side and not self.blocked:
+            self.blocked = True                               # 0x22C1
+            g.start_teleport(self.obj)                        # 0x22C5
+
+
 class BallGen(Generator):
     """Object type 12, handler 0x14F5. Counts down 4-7 updates (then 8 between balls); frames
     1-3 of table DS:0x31BF play on the last three counts, a ball spawns at zero if the spot
@@ -1881,10 +1909,7 @@ class JetPackJoe:
                                 self.player.explosions.clear()
                             self.cbm_cache.pop(self.current_room, None)
                             self.cbm_backup.pop(self.current_room, None)
-                            self.last_room = None   # force enter_room(): bitmap was rebuilt
-                            for other in self.room_objects.get(self.current_room, []):
-                                if other["type"] == 19:
-                                    other["armed"] = False
+                            self.last_room = None   # force enter_room(): objects re-init
                             self.beam_in = {"tile": dest_tile, "frame": 15, "timer": 0}
                             play_sound(SND_TRANSPORTER)   # 0x2020 (beam-in object init)
                         else:
@@ -1899,6 +1924,16 @@ class JetPackJoe:
                     if self.beam_in["frame"] < 0:
                         self.beam_in = None
 
+    def start_teleport(self, obj):
+        """0x22C5: begin the beam-out at the teleporter; beam_out's completion moves Joe to
+        dest_room/dest_tile and starts the beam-in there."""
+        dest_room = obj["params"][1] if len(obj["params"]) > 1 else 0
+        dest_tile = obj["params"][2] if len(obj["params"]) > 2 else 0
+        play_sound(SND_TRANSPORTER)                       # 0x1F62 (beam-out object init)
+        self.beam_out = {"tile": obj["params"][0], "frame": 0, "timer": 0,
+                         "dest_room": dest_room, "dest_tile": dest_tile,
+                         "src_room": self.current_room}
+
     def update_objects(self):
         """Update objects that affect gameplay (teleporters). Called during update phase."""
         room_idx = self.current_room
@@ -1906,35 +1941,8 @@ class JetPackJoe:
             return
         px, py = int(self.player.x), int(self.player.y)
         for obj in self.room_objects[room_idx]:
-            if obj["type"] == 19:  # teleporter — matching GAME.EXE 0x2219
-                x, y = obj["x"], obj["y"]
-                # Teleporter center (where trigger is): x+16, y+12
-                cx, cy = x + 16, y + 12
-                dx, dy = abs(px - cx), abs(py - cy)
-                # Inner trigger: Joe center within ~10px of teleporter center
-                inner = dx < 10 and dy < 8
-                # Outer boundary: Joe within the full teleporter area
-                outer_left = abs(px - (x + 2)) < 14
-                outer_right = abs(px - (x + 42)) < 14
-                outer_y = y - 4 < py < y + 40
-                on_boundary = (outer_left or outer_right) and outer_y
-                if not inner:
-                    obj["armed"] = not on_boundary
-                elif not on_boundary and obj.get("armed", True):
-                    obj["armed"] = True
-                    dest_room = obj["params"][1] if len(obj["params"]) > 1 else 0
-                    dest_tile = obj["params"][2] if len(obj["params"]) > 2 else 0
-                    # Start beam-out at source, then beam-in at destination
-                    src_tile = obj["params"][0]
-                    play_sound(SND_TRANSPORTER)       # 0x1F62 (beam-out object init)
-                    self.beam_out = {"tile": src_tile, "frame": 0, "timer": 0,
-                                     "dest_room": dest_room, "dest_tile": dest_tile,
-                                     "src_room": room_idx}
-                    # Disarm all teleporters in current room
-                    for other in self.room_objects.get(room_idx, []):
-                        if other["type"] == 19:
-                            other["armed"] = False
-                    return
+            if obj["type"] == 19:  # teleporter — a Teleporter entity (update_entities) fires it
+                continue
             elif obj["type"] in (15, 16):  # plates — write collision before player update
                 is_right = (obj["type"] == 16)
                 var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
@@ -2026,6 +2034,8 @@ class JetPackJoe:
                 self.entities.append(OrbGen(self, tile))
             elif t == 18:
                 self.entities.append(SensorSwitch(self, obj))
+            elif t == 19:
+                self.entities.append(Teleporter(self, obj))
 
     def update_entities(self):
         """Main loop 0x06F8: run every object whose next_time has passed, as often as needed."""
