@@ -674,6 +674,48 @@ class Generator(Entity):
                 surface.blit(tile_surfs[ti], ((self.col + dc) * TILE_W, (self.row + dr) * TILE_H))
 
 
+class SensorSwitch(Entity):
+    """Object type 18, handler 0x2061. A floor pad. Every 0x80 ticks (first run at init, then
+    random(0x80) later) it CHECKs shape 4 with BL=1; if Joe's marker is inside, it copies
+    switch_state[sw2] into switch_state[sw1] (0x20F8-0x2104). Its tile is written straight into
+    the background screen map (0x2137): 0x116 + (sw1 set ? 1 : 0) + (sw2 set ? 0x14 : 0)
+    + (touching ? (sw1 set ? 0x14 : 0x28) : 0)."""
+    interval = 0x80
+
+    def __init__(self, g, obj):
+        params = obj["params"]
+        tile = params[0]
+        super().__init__(obj["x"], obj["y"], g.tick)
+        self.col, self.row = tile % MAP_COLS, tile // MAP_COLS
+        self.sw1 = params[1] if len(params) > 1 else 0
+        self.sw2 = params[2] if len(params) > 2 else 0
+        self.tile = 0x116
+        self.next_time = g.tick + random.randrange(0x80)      # 0x20A4: random(0x80) + counter
+        self.update(g)                                        # 0x20CB: one update at init
+
+    def update(self, g):
+        total, hist = cb_check(g.cbm, 4, self.x >> 1, self.y >> 1, CT_WALL)
+        touching = hist[CT_JOE] != 0                          # [0x3175]
+        ss = g.switch_state
+        if touching:
+            ss[self.sw1] = ss[self.sw2]
+        tile, bump = 0x116, 0x28
+        if ss[self.sw1]:
+            tile, bump = tile + 1, 0x14
+        if ss[self.sw2]:
+            tile += 0x14
+        if touching:
+            tile += bump
+        self.tile = tile
+
+    def draw(self, surface, sprites, frame):
+        pass
+
+    def draw_tiles(self, surface, tile_surfs):
+        if self.tile < len(tile_surfs):
+            surface.blit(tile_surfs[self.tile], (self.col * TILE_W, self.row * TILE_H))
+
+
 class BallGen(Generator):
     """Object type 12, handler 0x14F5. Counts down 4-7 updates (then 8 between balls); frames
     1-3 of table DS:0x31BF play on the last three counts, a ball spawns at zero if the spot
@@ -1729,6 +1771,8 @@ class JetPackJoe:
                 continue
             elif ot == 14:  # sentry — a live Sentry entity is spawned in enter_room()
                 continue
+            elif ot == 18:  # sensor switch — a SensorSwitch entity is spawned in enter_room()
+                continue
             elif ot == 13:  # glow_ball — GAME.EXE 0x134D via shared field handler 0x1E3C
                 # Not a sprite: a 2x2 foreground tile animation (table DS:0x3BA9) with a hollow
                 # ring collision (shape 5 written, shape 6 erased each update). Frame 4 is the
@@ -1935,6 +1979,8 @@ class JetPackJoe:
                 self.entities.append(BallGen(self, tile))
             elif t == 20:
                 self.entities.append(OrbGen(self, tile))
+            elif t == 18:
+                self.entities.append(SensorSwitch(self, obj))
 
     def update_entities(self):
         """Main loop 0x06F8: run every object whose next_time has passed, as often as needed."""
@@ -1952,10 +1998,10 @@ class JetPackJoe:
     def draw_entities(self, surface):
         """Enemy layer (sprite priority 3-5: below Joe). Generator tiles are background."""
         for e in self.entities:
-            if isinstance(e, Generator):
+            if isinstance(e, (Generator, SensorSwitch)):
                 e.draw_tiles(surface, self.tile_surfs)
         for e in self.entities:
-            if not isinstance(e, Generator):
+            if not isinstance(e, (Generator, SensorSwitch)):
                 e.draw(surface, self.sprites, self.frame_no)
 
     def joe_check_and_unmark(self, cbm, backup):

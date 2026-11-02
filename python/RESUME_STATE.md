@@ -2882,10 +2882,7 @@ the sentry chases and crushes; the vertical field kills on touch ({0: 11}); a sh
 decrements lives; normal level start and walking unaffected; 600 busy frames in 0.18 s.
 
 ### Still not implemented (re-verified against the binary 2026-11-01, see Session 7)
-- Sensor switch (type 18; 0x2061: init interval 0x80, params +0x1E = sw1, +0x1F = sw2; update
-  CHECK(shape 4, BL=1) → if Joe bytes present copy switch_state[sw2] into switch_state[sw1];
-  tile = 0x116 + (sw1 var set ? 1 : 0) + (sw2 var set ? 0x14 : 0) + (touching ? (sw1 var set ?
-  0x14 : 0x28) : 0), written to the screen map at the object's tile). Only in L3 R13 (×3).
+- ~~Sensor switch (type 18)~~ — implemented 2026-11-01 as `SensorSwitch` (see below).
 - Plate crush death: VERIFIED in L2 R18 — Joe hovering between the plates (y 60-119) is crushed;
   standing on the floor below them he is not, which is correct.
 - Exact Joe physics: Joe's update 0x0CCC runs every 10 ticks (main loop 0x06BB, [0x23D2] += 10)
@@ -2979,3 +2976,21 @@ than the notes. Results:
 | When cutscenes play | PARTLY | 0x2750 (anim runner, AX<4) is called once with AX=1 at 0x02CD: after the FIRST time the level runner 0x05D1 returns with captives left (i.e. first death), then [0x2EE]=1 and the level restarts. Entry 0x01AD: `[cs:8](2) ; [cs:C](0) ; [cs:8](0) ; [cs:C](1) ; [cs:8](0) ; [cs:C](2) ; [cs:8](0) ; [cs:8](3) ; INT 61h` — [cs:C] is play-level(n) (0x0210 stores AX at [0x2BC], level table DS:0x2BE = pl/mp/lv 11-13); [cs:8] with 2 / 0 / 0 / 0 / 3 fits title / thumbs-up after each level / credits, but CS:0-F are loader-patched far pointers so this is inferred, not read. |
 | Muzzle flash exists | FALSE | fire handler 0x0EAA only creates the projectile (0xFE3) and plays sound 1; 0x0F05 is the death animation. |
 | Levels play in fixed sequence 1→2→3 | TRUE | entry sequence above; after level 3 the program exits to the launcher ("We hope you've enjoyed the game."). |
+
+
+### Sensor switch (type 18) implemented (2026-11-01)
+
+`SensorSwitch(Entity)` in jet_pack_joe.py, spawned by `enter_room`, drawn as a background tile
+by `draw_entities`. From handler 0x2061:
+- init (0x2083): interval 0x80 ticks, first update after random(0x80), params = tile, sw1, sw2
+  ([DI+0x1E], [DI+0x1F]); the update runs once immediately (0x20CB).
+- update (0x20D9): CHECK shape 4 (rows 2-3, cols 2-5 of the object position) with BL=1; if any
+  Joe byte → `switch_state[sw1] = switch_state[sw2]`. Tile written to the background screen map
+  (0x2137): 0x116 (278) + 1 if sw1 var set + 0x14 (20) if sw2 var set + (touching ? (0x14 if sw1
+  var set else 0x28) : 0). So: 278/279/298/299 idle, 318 touched-both-clear, 319 touched-both-set.
+- The only instance is L3 R13: three pads at tiles 248/251/254 (x 128/176/224, y 144) with
+  sw1 = 22/23/24 and sw2 = 41 (always 0). The doors in the room are [225, 22, 25], [228, 23, 26],
+  [231, 24, 27] at x 80/128/176, open at start (vars 22-24 = 255). Stepping on a pad copies 0
+  into its sw1 and **closes the door to the pad's left**, i.e. the one Joe just came through.
+- Tests: `python3 python/tests/test_switches.py` (spawn/tiles, variable copy + door closes +
+  tile returns, pad drawn on screen). All three suites pass (9 + 7 + 3).
