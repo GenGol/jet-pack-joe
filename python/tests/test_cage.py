@@ -105,9 +105,12 @@ def test_every_cage_in_the_game_opens_and_stays_open_after_reload():
             g.jump_to_room(room)
             d.run(2)
             g.player.time = 9999
-            d.place(cage["x"] + 23, cage["y"] + 40, radius=60)
-            d.run(90, until=lambda g: cage.get("disappear", -1) >= 0)
-            d.run(150, until=lambda g: cage.get("done"))
+            jx, jy = d.place(cage["x"] + 23, cage["y"] + 40, radius=60)
+            # Hover at the placed height (some cages hang over pits) until the rescue finishes.
+            for _ in range(240):
+                d.run(1, keys={"thrust"} if g.player.y > jy else set())
+                if cage.get("done") or g.current_room != room:
+                    break
             if not cage.get("done"):
                 failures.append((lvl + 1, room, "rescue did not complete"))
                 continue
