@@ -3037,3 +3037,42 @@ exactly n frames (it used to run n+1).
   every type-10 object. `get_collision_bitmap` now skips cages whose rescue has started
   (`disappear >= 0`), matching the original where a rescued captive's init sees its variable
   cleared and stays inactive. Test: round trip through the teleporter in `tests/test_cage.py`.
+
+
+### Enemies follow Joe between rooms (2026-11-02)
+
+Cam remembered balls from L1 R5 following him into R6 "if they were close enough". The old
+notes ("room change destroys all objects") were only half right. Decoded from 0x0802/0x0521:
+
+- Slot state 3 = **mobile** object: shots (0x1021), balls (0x15DD), birds (0x19D9), orbs
+  (0x263C). Slot byte +1 (visible): 1 live, 2 transit clone, 0 dormant.
+- **0x0521** (callers: Joe 0xE2B, shot 0x1095, ball 0x1716, bird 0x1ACC, orb 0x26EE) maps a
+  position outside the 320x192 room to (neighbour room, wrapped position) via the room's exit
+  table. A mobile object that leaves on its own takes the new room byte and jumps to its HIDE
+  path (visible=0): it waits, dormant, at the edge of the neighbouring room.
+- **Room change 0x0802** (Joe's edge transition 0xE30, teleport arrival 0xC6B):
+  1. every visible object of the old room: state 3 → AX=4 CLONE (0x09A6: copy the slot, clone
+     visible=2, original visible=0 — its collision bytes are left in place); others → AX=3 HIDE
+     (most non-mobile handlers set state 0 there, i.e. destroy themselves);
+  2. loop: [0x3065] += 100 ticks; run every due visible=2 clone (AX=2) in the OLD room's bitmap,
+     with Joe's marker absent; clones never retarget (`cmp [DI+1],1` at 0x1666) so they keep
+     their last heading; one that crosses an edge becomes dormant in the room beyond, stamped
+     with the simulated time; one that explodes leaves no explosion (0x1770 checks visible==1 and
+     room==current). The loop exits only when no clone ran in a pass (the 0xD48 "deadline" at
+     0x08A1 is checked only then), so a stuck clone would hang the original; the port caps the
+     simulation at 12000 ticks and discards leftovers;
+  3. remaining visible=2 → hide + destroy; 4. load the new room (0x032A rebuilds the bitmap);
+  5. activate (AX=1) every slot whose room == new room and whose next_time has passed — dormant
+     crossers appear at the edge when their simulated arrival time comes (a near ball right
+     behind Joe, a far one seconds later), and if Joe returns to the old room quickly its
+     dormant originals wake where they were; 6. init the new room's object list.
+- **Sweep 0x0A13** (once per second with the TIME counter): dormant objects whose next_time is
+  more than 0x1B58 (7000) ticks in the past are destroyed.
+- Sentries are not mobile: destroyed on exit, re-created on entry (unchanged).
+
+Python: `Entity.visible/room/mobile`, `Entity.cross()`, `Ball/Bird/Orb.activate()`,
+`JetPackJoe.exit_room()` (0x0521 for any object), `carry_mobiles()` (phases 1-3, called before
+`current_room` changes in `try_room_transition` and on teleport arrival), `make_dormant()`,
+`wake_dormant()` (phase 5 + the sweep, run each frame), `self.dormant`. The old room's cached
+collision bitmap is dropped on exit, like the original's rebuild on entry. Shots still die at
+the edge (not ported). Tests: `tests/test_follow.py`.

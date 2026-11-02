@@ -29,7 +29,7 @@ Controls:
   1 / 2 / 3  — Switch level
 """
 
-import struct, os, sys, time, random
+import struct, os, sys, time, random, copy
 from array import array
 import pygame
 
@@ -336,13 +336,39 @@ def in_room(x, y):
 # passed next_time, then next_time += interval (handlers may also adjust next_time).
 # ---------------------------------------------------------------------------
 class Entity:
+    """Object slot. `visible` mirrors slot byte +1: 1 live, 2 transit clone (room change
+    simulation), 0 dormant (hidden in some room, waiting to be activated). `mobile` objects
+    (slot state 3: balls, birds, orbs) cross room edges and survive room changes; everything
+    else is destroyed when Joe leaves the room."""
     interval = 20
+    mobile = False
 
     def __init__(self, x, y, tick):
         self.x, self.y = int(x), int(y)
         self.next_time = tick
         self.alive = True
         self.sprite_idx = None
+        self.visible = 1
+        self.room = None
+
+    def activate(self, g):
+        """AX=1: (re)write collision and become live."""
+        self.visible = 1
+
+    def cross(self, g, nx, ny):
+        """0x0521 exit test for a move to (nx, ny). Inside the room → False. Otherwise the object
+        moves into the neighbouring room at the wrapped position and goes dormant there (the
+        handlers jump to their HIDE path); if no room lies that way it is gone for good."""
+        ex = g.exit_room(self.room, nx, ny)
+        if ex is None:
+            return False
+        new_room, wx, wy = ex
+        if new_room is None:
+            self.alive = False
+        else:
+            self.room, self.x, self.y = new_room, wx, wy
+            g.make_dormant(self)
+        return True
 
     def update(self, g):
         pass
@@ -460,6 +486,7 @@ class Ball(Entity):
     restores the surrounding ring (shape 17) every update — touching it kills Joe. It explodes
     when anything (a shot's erase, Joe's marker, another ball's ring) disturbs its own bytes."""
     interval = 16
+    mobile = True
 
     @staticmethod
     def can_spawn(g, x, y):
@@ -475,18 +502,34 @@ class Ball(Entity):
         self.adx = self.ady = 0  # [DI+0x10] / [DI+0x12]
         self.phase = 0           # [DI+0x1F]
         self.sprite_idx = 42
+        self.room = g.current_room
+        self.activate(g)
+
+    def activate(self, g):
+        self.visible = 1
         cb_write(g.cbm, 16, self.x >> 1, self.y >> 1, CT_ENEMY)   # activate (0x1657)
+
+    def explode(self, g, cbm, backup, hx, hy):
+        """0x176A: only a live ball in Joe's room leaves an explosion; clones/dormant just die."""
+        cb_restore_if(cbm, backup, 16, hx, hy, CT_ENEMY)
+        if self.visible == 1 and self.room == g.current_room:
+            g.entities.append(EnemyExplosion(g, self.x, self.y, self.sprite_idx))
+        self.alive = False
 
     def update(self, g):
         cbm, backup = g.cbm, g.cbm_bak
         x, y = self.x, self.y
         hx, hy = x >> 1, y >> 1
-        self.retarget -= 1
-        if self.retarget == 0:
+        if self.visible == 1:                            # 0x1666: clones keep their heading
+            self.retarget -= 1
+        if self.visible == 1 and self.retarget == 0:
             self.retarget = 25
             self.sx = self.sy = 1
-            cx = int(g.player.x) - x
-            cy = int(g.player.y) - y
+            if self.room == g.current_room:              # 0x1688: else aim at (0,0)
+                cx = int(g.player.x) - x
+                cy = int(g.player.y) - y
+            else:
+                cx, cy = -x, -y
             if cx <= 0:
                 cx = -cx
                 self.sx = -1
@@ -496,9 +539,7 @@ class Ball(Entity):
             self.adx, self.ady = cx, cy
         total, hist = cb_check(cbm, 16, hx, hy, CT_ENEMY)
         if total:                                        # something intruded → explode (0x176A)
-            cb_restore_if(cbm, backup, 16, hx, hy, CT_ENEMY)
-            g.entities.append(EnemyExplosion(g, x, y, self.sprite_idx))
-            self.alive = False
+            self.explode(g, cbm, backup, hx, hy)
             return
         cb_restore_if(cbm, backup, 16, hx, hy, CT_ENEMY)
         nx, ny = x, y
@@ -515,8 +556,7 @@ class Ball(Entity):
             if not self.phase:
                 self.phase = 1
                 self.next_time -= 7
-        if not in_room(nx, ny):
-            self.alive = False
+        if self.cross(g, nx, ny):                        # 0x1716: left the room → dormant
             return
         total, hist = cb_check(cbm, 16, nx >> 1, ny >> 1, 0)
         if total:
@@ -538,6 +578,7 @@ class Orb(Entity):
     Bresenham line (sprite 50 at spawn, 51 in flight). Explodes on anything solid, restoring the
     backup under its 5x3 shape (22) — which wipes Joe's marker and kills him."""
     interval = 9
+    mobile = True
 
     @staticmethod
     def can_spawn(g, x, y):
@@ -558,6 +599,7 @@ class Orb(Entity):
             self.sy = -1
         self.adx, self.ady = cx, cy
         self.sprite_idx = 50
+        self.room = g.current_room
 
     def update(self, g):
         cbm, backup = g.cbm, g.cbm_bak
@@ -576,8 +618,7 @@ class Orb(Entity):
             if not self.phase:
                 self.phase = 1
                 self.next_time -= 3
-        if not in_room(nx, ny):
-            self.alive = False
+        if self.cross(g, nx, ny):                        # 0x26EE: left the room → dormant
             return
         total, hist = cb_check(cbm, 22, nx >> 1, ny >> 1, 0)
         if total == 0:
@@ -585,7 +626,8 @@ class Orb(Entity):
             self.sprite_idx = 51
         else:
             cb_restore(cbm, backup, 22, nx >> 1, ny >> 1)
-            g.entities.append(EnemyExplosion(g, x, y, self.sprite_idx))
+            if self.visible == 1 and self.room == g.current_room:    # 0x270F
+                g.entities.append(EnemyExplosion(g, x, y, self.sprite_idx))
             self.alive = False
 
 
@@ -595,6 +637,7 @@ class Bird(Entity):
     laser (sprite 25/26 flickering, 89px tall) for 10 updates; the DRAW_VISUAL of that column
     wipes Joe's marker and kills him. Vanishes silently on hitting a ceiling (type 1)."""
     interval = 20
+    mobile = True
 
     @staticmethod
     def can_spawn(g, x, y):
@@ -605,13 +648,19 @@ class Bird(Entity):
         self.sprite_idx = 29     # [DI+0x1C]
         self.frame_acc = 0       # [DI+0x1D]
         self.laser = 0           # [DI+0x16]
+        self.room = g.current_room
+        self.activate(g)
+
+    def activate(self, g):
+        self.visible = 1
+        self.laser = 0
         cb_write(g.cbm, 2, self.x >> 1, self.y >> 1, CT_ENEMY)   # activate (0x1A54)
 
     def update(self, g):
         cbm, backup = g.cbm, g.cbm_bak
         x, y = self.x, self.y
         hx, hy = x >> 1, y >> 1
-        if self.laser == 0:
+        if self.laser == 0 and self.room == g.current_room:      # 0x1A75
             total, hist = cb_check(cbm, 15, hx, hy, 0)
             if hist[CT_JOE]:
                 self.laser = 10
@@ -619,13 +668,13 @@ class Bird(Entity):
         total, hist = cb_check(cbm, 2, hx, hy, CT_ENEMY)
         if total:                                        # intruded → explode (0x1B42)
             cb_restore_if(cbm, backup, 2, hx, hy, CT_ENEMY)
-            g.entities.append(EnemyExplosion(g, x, y, self.sprite_idx))
+            if self.visible == 1 and self.room == g.current_room:
+                g.entities.append(EnemyExplosion(g, x, y, self.sprite_idx))
             self.alive = False
             return
         cb_restore_if(cbm, backup, 2, hx, hy, CT_ENEMY)
         ny = y - 1
-        if not in_room(x, ny):
-            self.alive = False
+        if self.cross(g, x, ny):                         # 0x1ACC: rose out of the room → dormant
             return
         total, hist = cb_check(cbm, 2, hx, ny >> 1, 0)
         if total:
@@ -1151,6 +1200,7 @@ class JetPackJoe:
         self.tick = 0.0          # object counter (INT 62h DX=0), advanced TICKS_PER_FRAME per frame
         self.frame_no = 0        # render frame number ([0x2361]) — drives sprite flicker
         self.entities = []       # enemies, generators, enemy explosions in the current room
+        self.dormant = []        # mobile objects hidden in some room (slot visible=0), any room
         self.last_room = None
         self.joe_marked = None   # the cbm Joe's type-14 marker is currently stamped in
         self.death = None        # Joe death animation state (GAME.EXE 0x0F05)
@@ -1904,6 +1954,7 @@ class JetPackJoe:
                             self.player.vx = 0
                             self.player.vy = 0
                             if dest_room != self.current_room:
+                                self.carry_mobiles()
                                 self.current_room = dest_room
                                 self.player.shots.clear()
                                 self.player.explosions.clear()
@@ -1975,11 +2026,108 @@ class JetPackJoe:
     # ------------------------------------------------------------------
     # Room entry, enemy scheduling, Joe's collision marker and death
     # ------------------------------------------------------------------
+    def exit_room(self, room, x, y):
+        """ROOM_TRANSITION 0x0521 for any object at (x, y) in `room`: None while inside the
+        320x192 area, else (new_room or None, wrapped_x, wrapped_y) using the room's exit table
+        (two rooms per edge, split at the middle of that edge). None room = no exit that way."""
+        cx, dy = x - 160, y - 96
+        if room is None or room >= len(self.room_headers):
+            return None
+        hdr = self.room_headers[room]
+        if dy < -96:
+            dy += 192
+            new = hdr[0]
+            if hdr[0] != hdr[1]:
+                if cx >= 0:
+                    new = hdr[1]
+                    cx -= 320
+                cx += 160
+        elif dy >= 96:
+            dy -= 192
+            new = hdr[5]
+            if hdr[4] != hdr[5]:
+                if cx >= 0:
+                    new = hdr[4]
+                    cx -= 320
+                cx += 160
+        elif cx < -160:
+            cx += 320
+            new = hdr[7]
+            if hdr[6] != hdr[7]:
+                if dy >= 0:
+                    new = hdr[6]
+                    dy -= 192
+                dy += 96
+        elif cx >= 160:
+            cx -= 320
+            new = hdr[2]
+            if hdr[2] != hdr[3]:
+                if dy >= 0:
+                    new = hdr[3]
+                    dy -= 192
+                dy += 96
+        else:
+            return None
+        return (None if new == 0xFF else new), cx + 160, dy + 96
+
+    def make_dormant(self, e):
+        """A mobile object leaves the live list and waits in self.dormant (slot visible=0)."""
+        e.visible = 0
+        self.dormant.append(e)
+
+    def carry_mobiles(self):
+        """Room change 0x0802, phases 1-3, run BEFORE current_room changes. Every live mobile
+        object is cloned (AX=4, 0x09A6): the original goes dormant where it is (it wakes if Joe
+        is back within ~6 s), the clone (visible=2) keeps flying in 100-tick steps of simulated
+        time until it crosses an edge and goes dormant in the room beyond, stamped with its
+        simulated arrival time, or dies. Joe's marker is absent during this, as in the original.
+        The original loops until every clone has settled; a cap guards against a stuck one."""
+        self.cbm = self.get_collision_bitmap(self.current_room)[0]
+        self.cbm_bak = self.cbm_backup[self.current_room]
+        clones = []
+        for e in list(self.entities):
+            if e.mobile and e.alive and e.visible == 1:
+                c = copy.copy(e)
+                c.visible = 2
+                clones.append(c)
+                self.make_dormant(e)
+        t = self.tick
+        limit = t + 12000
+        while clones and t < limit:
+            t += 100
+            for c in list(clones):
+                while c.alive and c.visible == 2 and c.next_time <= t:
+                    c.update(self)
+                    c.next_time += c.interval
+                if not c.alive or c.visible != 2:
+                    clones.remove(c)
+        for c in clones:                                  # phase 3: still in transit → destroyed
+            c.alive = False
+        self.entities = [e for e in self.entities if e.alive and e.visible == 1]
+
+    def wake_dormant(self):
+        """Main loop 0x071C / room entry 0x0916: a dormant object in Joe's room whose time has
+        come is activated (AX=1). Timer tick 0x0A13: dormant objects more than 0x1B58 ticks past
+        their time are destroyed."""
+        keep = []
+        for e in self.dormant:
+            if not e.alive or e.room is None:
+                continue
+            if e.room == self.current_room and e.next_time <= self.tick:
+                e.activate(self)
+                self.entities.append(e)
+            elif self.tick - e.next_time >= 0x1B58:
+                continue
+            else:
+                keep.append(e)
+        self.dormant = keep
+
     def jump_to_room(self, room):
         """Debug helper (G key, [ ], --start): switch rooms without a door and drop Joe on the
         nearest free spot so he does not start inside a wall or a pit."""
         if not 0 <= room < self.num_rooms:
             return False
+        self.dormant = []
         self.current_room = room
         self.beam_in = self.beam_out = None
         self.death = None
@@ -2036,19 +2184,22 @@ class JetPackJoe:
                 self.entities.append(SensorSwitch(self, obj))
             elif t == 19:
                 self.entities.append(Teleporter(self, obj))
+        self.wake_dormant()
 
     def update_entities(self):
         """Main loop 0x06F8: run every object whose next_time has passed, as often as needed."""
         room = self.current_room
         self.cbm = self.get_collision_bitmap(room)[0]
         self.cbm_bak = self.cbm_backup[room]
+        if self.dormant:
+            self.wake_dormant()
         for e in list(self.entities):
             n = 0
             while e.alive and e.next_time <= self.tick and n < 8:
                 e.update(self)
                 e.next_time += e.interval
                 n += 1
-        self.entities = [e for e in self.entities if e.alive]
+        self.entities = [e for e in self.entities if e.alive and e.visible == 1]
 
     def draw_entities(self, surface):
         """Enemy layer (sprite priority 3-5: below Joe). Generator tiles are background."""
@@ -2180,7 +2331,11 @@ class JetPackJoe:
             self.player.y = max(1, min(SCREEN_H - 1, self.player.y))
             return
 
-        print(f"TRANSITION: room {self.current_room}→{new_room}  pos ({self.player.x:.0f},{self.player.y:.0f})→({cx+160:.0f},{dx+96:.0f})")
+        if os.environ.get("JPJ_DEBUG"):
+            print(f"TRANSITION: room {self.current_room}→{new_room}  pos ({self.player.x:.0f},{self.player.y:.0f})→({cx+160:.0f},{dx+96:.0f})")
+        self.carry_mobiles()
+        self.cbm_cache.pop(self.current_room, None)       # 0x032A rebuilds a room on entry
+        self.cbm_backup.pop(self.current_room, None)
         self.current_room = new_room
         self.player.x = cx + 160
         self.player.y = dx + 96
@@ -2206,6 +2361,7 @@ class JetPackJoe:
             self.cbm_cache = {}
             self.cbm_backup = {}
             self.entities = []
+            self.dormant = []
             self.last_room = None
             self.joe_marked = None
             self.death = None
