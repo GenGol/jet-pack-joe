@@ -3006,3 +3006,13 @@ by `draw_entities`. From handler 0x2061:
 - `--no-enemies` (or `JPJ_ENEMIES=0`) stops the sentry and the ball/orb/bird generators from
   spawning; **E** toggles it in play and respawns the room. Hazards (glow balls, fields, plates)
   are unaffected. The status bar shows "NO ENEMIES" while it is off.
+
+
+### Fix: cleared cage walls came back (2026-11-01)
+Cam could not walk through a rescued cage in L3 R13. Cause: `get_collision_bitmap` took the
+backup bitmap *after* adding the cage walls, so every restore-from-backup (Joe's own unmark,
+sentry/shot erases) re-created the walls after the rescue had cleared them. The original's
+backup (ES:0x4820) is the bare tile collision taken before any object writes, and the captive
+handler re-DRAW_COLLISIONs shape 13 every update (0x142F). Now: backup is copied before the cage
+walls are added, and the active cage rewrites its four wall columns every frame; after the
+disappear animation they are cleared once and stay gone. Tests: `tests/test_cage.py`.

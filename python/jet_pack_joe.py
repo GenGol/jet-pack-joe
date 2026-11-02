@@ -1191,8 +1191,12 @@ class JetPackJoe:
             self.cbm_cache[room_idx] = build_collision_bitmap(
                 self.blk, self.levels[self.current_level]["map"],
                 room_idx, self.num_tiles)
-            # Add cage collision walls (shape 13: two 2px walls, 18 rows tall)
+            # Backup bitmap for DRAW_VISUAL erase (original ES:0x4820): the bare tile
+            # collision, taken BEFORE any object writes. Objects (cages, doors, plates, enemies)
+            # re-write their own shapes every update, so a restore never brings them back.
             cbm = self.cbm_cache[room_idx][0]
+            self.cbm_backup[room_idx] = bytearray(cbm)
+            # Add cage collision walls (shape 13: two 2px walls, 18 rows tall)
             if room_idx in self.room_objects:
                 for obj in self.room_objects[room_idx]:
                     if obj["type"] == 10:
@@ -1202,8 +1206,6 @@ class JetPackJoe:
                                 bx, by = hx + c, hy + r
                                 if 0 <= bx < HALF_W and 0 <= by < HALF_H:
                                     cbm[by * HALF_W + bx] = 1
-            # Backup bitmap for DRAW_VISUAL erase (matches original 0x4820)
-            self.cbm_backup[room_idx] = bytearray(cbm)
         return self.cbm_cache[room_idx]
 
     def is_solid(self, col, row):
@@ -1565,6 +1567,15 @@ class JetPackJoe:
                         sp = None
                     else:
                         # Active cage: draw captive + force field, check collision
+                        # DRAW_COLLISION shape 13 every update (0x142F): keeps the walls present
+                        # even after another object's restore-from-backup passed over them.
+                        cbm = self.get_collision_bitmap(room_idx)[0]
+                        chx, chy = obj["x"] // 2, obj["y"] // 2
+                        for r in range(18):
+                            for c in (1, 2, 21, 22):
+                                bx, by = chx + c, chy + r
+                                if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                                    cbm[by * HALF_W + bx] = 1
                         sp = self.sprites[obj["params"][2]]
                         surface.blit(sp["surf"], (cx + sp["x_off"], cy + sp["y_off"]))
                         # Force field tiles (4 frames from DS:0x3AF5)
