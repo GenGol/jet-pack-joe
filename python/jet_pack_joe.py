@@ -1403,6 +1403,8 @@ class TimeoutBeam(Entity):
 #             same path. kind 2 SHIELD: absorbs
 #             one death (any cause, including a crush, which throws Joe to the nearest free spot),
 #             then Joe is invulnerable for SHIELD_INVULN ticks.
+#   Also in enhanced mode: a shot that left into another room is caught up on the updates it
+#   missed when that room wakes (`catch_up`), instead of resuming from the edge.
 #   23 turret (tile, var, sides): a 16x18 px gun standing in its tile (its body pokes 6 px above
 #             the tile; collision = SH_TURRET, the same solid rectangle, as type 6, so touching it
 #             kills). It cannot fire for TURRET_WARMUP ticks after the room is entered. Every
@@ -2361,20 +2363,38 @@ class JetPackJoe:
 
     def wake_dormant(self):
         """Main loop 0x071C / room entry 0x0916: a dormant object in Joe's room whose time has
-        come is activated (AX=1). Timer tick 0x0A13: dormant objects more than 0x1B58 ticks past
-        their time are destroyed."""
-        keep = []
-        for e in self.dormant:
+        come is activated (AX=1) and resumes where it was parked."""
+        pending, self.dormant = self.dormant, []
+        for e in pending:
             if not e.alive or e.room is None:
                 continue
             if e.room == self.current_room and e.next_time <= self.tick:
                 e.activate(self)
-                self.entities.append(e)
-            elif self.tick - e.next_time >= 0x1B58:
-                continue
+                if self.enhanced and isinstance(e, Shot):
+                    self.catch_up(e)
+                if e.alive and e.visible == 1:
+                    self.entities.append(e)
             else:
-                keep.append(e)
-        self.dormant = keep
+                self.dormant.append(e)
+
+    def catch_up(self, e):
+        """Enhanced mode: a shot parked at a room edge is run through the updates it missed, so
+        it reappears where it would be by now, which usually means it has already hit a wall or
+        left (the original, 0x06F8, resumes it from the edge up to ~6 s later: Cam found that
+        wrong). Run as a transit clone (visible 2) so no stale explosion is shown."""
+        e.visible = 2
+        n = 0
+        while e.alive and e.visible == 2 and e.next_time + e.interval <= self.tick and n < 2000:
+            e.update(self)
+            e.next_time += e.interval
+            n += 1
+        if e.visible == 2:
+            e.visible = 1
+
+    def purge_dormant(self):
+        """Timer tick 0x0A13 (once per second, with the TIME countdown): dormant objects more
+        than 0x1B58 (7000) ticks past their time are destroyed (AX=5)."""
+        self.dormant = [e for e in self.dormant if self.tick - e.next_time < 0x1B58]
 
     def jump_to_room(self, room):
         """Debug helper (G key, [ ], --start): switch rooms without a door and drop Joe on the
@@ -2767,6 +2787,7 @@ class JetPackJoe:
                         self.player.time -= 1
                     else:
                         self.spawn_timeout_beam()         # 0x0A38 AX=0: TIME has run out
+                    self.purge_dormant()                  # 0x0A13
 
             self.draw()
             pygame.display.flip()

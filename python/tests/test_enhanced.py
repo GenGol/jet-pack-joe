@@ -142,6 +142,41 @@ def test_three_hits_destroy_the_turret():
     assert turret.check(g.cbm, 0)[0] == 0, "its collision is erased"
 
 
+def shot_into_next_room(enhanced):
+    """Fire right from the edge of room 3; the shot parks dormant at the edge of room 4."""
+    d = Driver(level_file=LEVEL, enhanced=enhanced)
+    d.g.enemies_enabled = False
+    d.goto(3, 3)
+    g = d.g
+    d.place(290, FLOOR_Y)
+    g.player.direction = 1
+    d.run(1, keys={"fire"})
+    d.run(30, until=lambda g: any(isinstance(e, J.Shot) for e in g.dormant))
+    parked = [e for e in g.dormant if isinstance(e, J.Shot)]
+    assert parked and parked[0].room == 4 and parked[0].x < 8, "shot should park at room 4's left edge"
+    return d, g
+
+
+def test_parked_shot_is_caught_up_when_joe_follows():
+    """Cam: a shot fired into the next room reappeared at its edge 10 s later. Enhanced mode runs
+    the missed updates on wake-up, so a 3 s old shot has long crossed the room or hit a wall."""
+    d, g = shot_into_next_room(enhanced=True)
+    d.run(180)
+    d.run(200, keys={"right"}, until=lambda g: g.current_room == 4)
+    assert g.current_room == 4
+    stale = [(s.x, s.y) for s in d.entities(J.Shot) if s.x < 100]
+    assert not stale, f"shot resumed from the edge: {stale}"
+    assert not g.player.explosions, "no stale wall explosion either"
+
+
+def test_classic_mode_resumes_the_parked_shot_like_the_original():
+    d, g = shot_into_next_room(enhanced=False)
+    d.run(180)
+    d.run(200, keys={"right"}, until=lambda g: g.current_room == 4)
+    shots = d.entities(J.Shot)
+    assert shots and shots[0].x < 40, "GAME.EXE 0x06F8 wakes the shot where it was parked"
+
+
 def test_status_bar_shows_the_pack():
     d, g = armoury()
     g.player.pack = J.PACK_TWIN

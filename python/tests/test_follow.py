@@ -73,7 +73,9 @@ def test_stale_dormant_objects_are_swept():
     ball.room = 7                            # pretend it crossed into a room Joe never enters
     g.make_dormant(ball)
     g.entities.remove(ball)
-    d.run(int(0x1B58 / J.TICKS_PER_FRAME) + 10)
+    d.run(int(0x1B58 / J.TICKS_PER_FRAME) - 10)
+    assert ball in g.dormant, "not yet: the sweep runs with the once-per-second TIME tick (0x0A13)"
+    d.run(80, until=lambda g: ball not in g.dormant)
     assert ball not in g.dormant, "dormant object should be destroyed after 0x1B58 ticks"
 
 

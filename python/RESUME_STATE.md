@@ -3310,3 +3310,21 @@ of levels 1-3 contains either, so the faithful port plays exactly as before. `--
 Ideas not built yet (from the same list): bounce/charge/homing shots, bombs, afterburner,
 hover, phase, cage remote, freeze, time cell; crawler, seeker, splitter, armoured, thief,
 jailer, bosses; generators that react to the timer or can be destroyed; score.
+
+### Shots parked in the next room (2026-11-03)
+
+Cam: a shot fired into the next room still appeared there ~10 s later. Verified in GAME.EXE
+that this is the original's behaviour: the shot handler's ROOM_TRANSITION call (0x1095, carry
+set) stores the new room and wrapped position and jumps to its HIDE path (dormant); the main
+loop 0x06F8 activates (AX=1) any dormant slot in Joe's room whose next_time has passed, so it
+resumes from the edge; and the once-per-second TIME tick 0x0A13 destroys (AX=5) dormant
+slots with counter - next_time ≥ 0x1B58 (7000 ticks), so the window is 6-7 s (10 s is
+probably frame-rate drift: game time advances per rendered frame). Changes:
+- The stale sweep now runs from the per-second tick (`purge_dormant`), as in the original,
+  instead of every frame in `wake_dormant`.
+- Enhanced mode (`JetPackJoe.enhanced`): `catch_up` runs a woken shot through the updates it
+  missed, as a transit clone so no stale explosion shows; it ends up where it would be, which
+  after a second or two means gone. `--classic` keeps the original's resume-from-the-edge.
+- Tests: `test_enhanced.py::test_parked_shot_is_caught_up_when_joe_follows` and
+  `test_classic_mode_resumes_the_parked_shot_like_the_original`; `test_follow.py`'s sweep
+  test now checks the once-per-second granularity.
