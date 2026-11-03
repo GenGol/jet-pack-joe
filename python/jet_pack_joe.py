@@ -1202,7 +1202,10 @@ class Player:
         sx = self.x - 12 + 24 * self.direction
         g.entities.append(Shot(g, sx, self.y + 2, self.direction))  # 0x0EDD
         if self.pack == PACK_TWIN and g.enhanced:        # enhanced: a second shot trails the first
-            g.entities.append(Shot(g, sx - 6 * (2 * self.direction - 1), self.y - 6, self.direction))
+            # Same row, 8 px behind: it hits whatever the first hits (a turret is only 12 px
+            # tall), and 8 px = 60 ticks later, past the turret's 32-tick update, so it counts
+            # as a separate hit.
+            g.entities.append(Shot(g, sx - 8 * (2 * self.direction - 1), self.y + 2, self.direction))
         play_sound(SND_SHOOT)                            # 0x0EF8
 
     def update_explosions(self):
@@ -1392,7 +1395,8 @@ class TimeoutBeam(Entity):
 #   22 pack   (tile, kind, var): a pickup Joe wears until he dies or finishes the level. Present
 #             while switch variable `var` is non-zero; taking it clears the variable, so it does
 #             not come back when the room is re-entered. One pack at a time: a new one replaces
-#             the old. kind 1 TWIN SHOT: a second shot trails every shot. kind 2 SHIELD: absorbs
+#             the old. kind 1 TWIN SHOT: a second shot trails every shot 8 px behind on the same
+#             row. kind 2 SHIELD: absorbs
 #             one death (any cause, including a crush, which throws Joe to the nearest free spot),
 #             then Joe is invulnerable for SHIELD_INVULN ticks.
 #   23 turret (tile, var, sides): a floor- or wall-mounted gun (collision shape 2, type 6, so

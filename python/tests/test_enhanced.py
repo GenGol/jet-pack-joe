@@ -73,7 +73,20 @@ def test_twin_shot_fires_two_shots_per_press():
     g.player.pack = J.PACK_TWIN
     d.run(1, keys={"fire"})
     shots = d.entities(J.Shot)
-    assert len(shots) == 2 and len({s.y for s in shots}) == 2, "two stacked shots"
+    assert len(shots) == 2 and len({s.y for s in shots}) == 1, "two shots on the same row"
+    assert abs(shots[0].x - shots[1].x) == 8
+
+
+def test_twin_shot_lands_two_hits_on_the_turret():
+    """Both shots of a volley hit the turret: two presses destroy it (3 hp)."""
+    d, g = armoury()
+    d.place(TURRET_X + 70, FLOOR_Y)
+    g.player.direction = 0
+    g.player.pack = J.PACK_TWIN
+    turret = d.entities(J.Turret)[0]
+    d.run(1, keys={"fire"})
+    d.run(60, until=lambda g: not d.entities(J.Shot))
+    assert turret.hp == J.TURRET_HP - 2, f"one volley should take two hit points, hp={turret.hp}"
 
 
 def test_shield_absorbs_one_death_then_breaks():

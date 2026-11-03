@@ -3263,7 +3263,9 @@ of levels 1-3 contains either, so the faithful port plays exactly as before. `--
   middle of its tile) for Joe's marker. Present while `switch_state[var] != 0`; taking it
   clears the var, so it does not return on re-entry. One pack at a time (`Player.pack`), lost
   with the Player object on death or level change. kind 1 **TWIN SHOT**: `Player.fire` adds a
-  second shot 6 px behind and 8 px above the first. kind 2 **SHIELD**: `JetPackJoe.shield_save`
+  second shot 8 px behind the first on the same row (Cam found the first version, 8 px higher,
+  flew over the 12 px turret; the 8 px gap is 60 ticks, more than the turret's 32-tick update,
+  so a volley counts as two hits). kind 2 **SHIELD**: `JetPackJoe.shield_save`
   absorbs one death from any cause (`start_death`) and then grants `SHIELD_INVULN` = 1750
   ticks of invulnerability; a crush (`Player._unstick` failing) goes through
   `shield_knockback`, which moves Joe to the nearest clear spot within 40 px or leaves him
