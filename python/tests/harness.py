@@ -45,11 +45,14 @@ class _Keys:
 
 
 class Driver:
-    def __init__(self, seed=1):
+    def __init__(self, seed=1, level_file=None):
         random.seed(seed)
         self.g = J.JetPackJoe()
         self.g.clock = _NoClock()
         self.frame = 0
+        if level_file:
+            self.g.levels.append(J.load_level_file(level_file))
+            self.g.set_level(len(self.g.levels) - 1)
 
     # --- setup -------------------------------------------------------------------------
     def goto(self, level, room, skip_beam=True):

@@ -1179,9 +1179,9 @@ class JetPackJoe:
         self.num_tiles = len(self.blk) // (TILE_W * TILE_H)
 
         self.levels = [
-            {"map": load_raw("MP11.DAT"), "pal": load_palette("PL11.DAT"), "name": "Level 1"},
-            {"map": load_raw("MP12.DAT"), "pal": load_palette("PL12.DAT"), "name": "Level 2"},
-            {"map": load_raw("MP13.DAT"), "pal": load_palette("PL13.DAT"), "name": "Level 3"},
+            {"map": load_raw("MP11.DAT"), "lv": load_raw("LV11.DAT"), "pal": load_palette("PL11.DAT"), "name": "Level 1"},
+            {"map": load_raw("MP12.DAT"), "lv": load_raw("LV12.DAT"), "pal": load_palette("PL12.DAT"), "name": "Level 2"},
+            {"map": load_raw("MP13.DAT"), "lv": load_raw("LV13.DAT"), "pal": load_palette("PL13.DAT"), "name": "Level 3"},
         ]
 
         self.current_level = 0
@@ -1236,8 +1236,7 @@ class JetPackJoe:
             self.switch_state[i] = 0xFF
         # Parse switch-off list from level data trailer
         # (GAME.EXE at 0x062D: sets read pointer to room 68, reads header + switch IDs)
-        lv_files = ["LV11.DAT", "LV12.DAT", "LV13.DAT"]
-        lv_data = load_raw(lv_files[self.current_level])
+        lv_data = self.levels[self.current_level]["lv"]
         first_off = struct.unpack_from('<H', lv_data, 0)[0]
         # Room 68's offset + 8 (skip header) = start of trailer data
         trailer_off = struct.unpack_from('<H', lv_data, 68 * 2)[0] + 8
@@ -1340,8 +1339,7 @@ class JetPackJoe:
 
     def load_room_headers(self):
         """Load room connectivity from LVxx.DAT for current level."""
-        lv_files = ["LV11.DAT", "LV12.DAT", "LV13.DAT"]
-        data = load_raw(lv_files[self.current_level])
+        data = self.levels[self.current_level]["lv"]
         first_off = struct.unpack_from('<H', data, 0)[0]
         num_entries = first_off // 2
         offsets = [struct.unpack_from('<H', data, i * 2)[0] for i in range(num_entries)]
@@ -1357,8 +1355,7 @@ class JetPackJoe:
 
     def load_room_objects(self):
         """Parse objects from LVxx.DAT for each room."""
-        lv_files = ["LV11.DAT", "LV12.DAT", "LV13.DAT"]
-        data = load_raw(lv_files[self.current_level])
+        data = self.levels[self.current_level]["lv"]
         first_off = struct.unpack_from('<H', data, 0)[0]
         num_entries = first_off // 2
         offsets = [struct.unpack_from('<H', data, i * 2)[0] for i in range(num_entries)]
@@ -2278,7 +2275,7 @@ class JetPackJoe:
         self.enter_room()
 
     def set_level(self, level):
-        if 0 <= level < 3:
+        if 0 <= level < len(self.levels):
             self.current_level = level
             self.build_assets()
             self.current_room = 0
@@ -2331,8 +2328,8 @@ class JetPackJoe:
                         self.jump_to_room(self.current_room + 1)
                     elif event.key == pygame.K_LEFTBRACKET:
                         self.jump_to_room(self.current_room - 1)
-                    elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3):
-                        self.set_level(event.key - pygame.K_1)
+                    elif event.key in (pygame.K_1, pygame.K_2, pygame.K_3, pygame.K_4):
+                        self.set_level(event.key - pygame.K_1)      # 4 = a level loaded with --level
                     elif event.key == pygame.K_g:
                         self.goto_buf = ""
                     elif event.key == pygame.K_e:
@@ -2475,14 +2472,48 @@ def parse_start_arg(argv):
             spec = argv[i + 1]
         if spec:
             lvl, _, room = spec.partition(":")
-            if lvl.isdigit() and room.isdigit() and 1 <= int(lvl) <= 3:
+            if lvl.isdigit() and room.isdigit() and 1 <= int(lvl) <= 4:
                 return int(lvl) - 1, int(room)
             raise SystemExit(f"bad --start {spec!r}: use LEVEL:ROOM, e.g. --start 3:13")
     return None
 
 
+LEVEL_MAGIC = b"JPL1"
+
+
+def load_level_file(path):
+    """A standalone level: b"JPL1", three little-endian u32 sizes, then the map (MPxx format),
+    the level data (LVxx format) and the 768-byte palette, then an optional UTF-8 name."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:4] != LEVEL_MAGIC:
+        raise SystemExit(f"{path}: not a Jet Pack Joe level file")
+    n_map, n_lv, n_pal = struct.unpack_from('<III', data, 4)
+    pos = 16
+    m = data[pos:pos + n_map]; pos += n_map
+    lv = data[pos:pos + n_lv]; pos += n_lv
+    pal_raw = data[pos:pos + n_pal]; pos += n_pal
+    name = data[pos:].decode("utf-8", "replace") or os.path.basename(path)
+    pal = [(pal_raw[i] * 4, pal_raw[i + 1] * 4, pal_raw[i + 2] * 4) for i in range(0, 768, 3)]
+    return {"map": m, "lv": lv, "pal": pal, "name": name}
+
+
+def parse_level_arg(argv):
+    """`--level FILE` → path or None."""
+    for i, a in enumerate(argv):
+        if a.startswith("--level="):
+            return a.split("=", 1)[1]
+        if a == "--level" and i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
 if __name__ == "__main__":
     game = JetPackJoe()
+    level_path = parse_level_arg(sys.argv)
+    if level_path:
+        game.levels.append(load_level_file(level_path))      # becomes level 4 (key 4)
+        game.set_level(len(game.levels) - 1)
     start = parse_start_arg(sys.argv)
     if start:
         game.set_level(start[0])

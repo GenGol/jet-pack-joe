@@ -3105,3 +3105,24 @@ scheduler at 15 ticks: on crossing an edge (0x1095) they park dormant in the nex
 resume if Joe follows within ~6 s, exactly like balls; on a room change they are cloned and
 carried like the other mobiles. Explosions only when live and in Joe's room (0x10D2).
 Tests: `tests/test_joe.py`.
+
+
+### Standalone test level (2026-11-03)
+
+`python/tools/build_test_level.py` writes `python/TESTLEVEL.JPL`, a seven-room level with every
+object type, built from tile stamps copied out of MP11/12/13 so each object has its real
+surroundings (door rails, cage/teleporter frames, generator bases, emitters). Load it with
+`python3 jet_pack_joe.py --level TESTLEVEL.JPL` (it becomes level 4: key **4**, `--start 4:N`).
+File format: `JPL1`, u32 map/lv/pal sizes, MPxx map, LVxx level data (70 entries, trailer in
+entry 68), 768-byte palette (PL11), name. Loader: `load_level_file`, `--level FILE`.
+
+Rooms: 0 fans 1-4 + wall-switch door + toggle-pad door (beam-in here); 1 vertical field +
+left switch, horizontal field + right switch, three glow balls + toggle pad; 2 two cages (the
+level's captives) + a plate pair; 3 ball/bird/orb generators; 4 sentry + two doors whose
+sensor pads close the door behind you; 5 three teleporters (one to room 6, a same-room pair);
+6 teleporter back. Exits run left/right along the floor. Variables that start OFF (trailer
+off-list): 10, 11, 31, 32 (room 0 doors), 18, 19 (plates), 23 (sensor source), 33, 34.
+Layout lessons: wall switches trigger through shape 4 at rows +2..3 of their tile and their
+tile carries half a wall (CB00 shape 35/34), so at walking height they must sit at row 13;
+in the real levels they are placed at flying height. Tests: `tests/test_level_file.py`
+(loads, every room runs, a scripted walkthrough of room 0 with hops over low blocks).
