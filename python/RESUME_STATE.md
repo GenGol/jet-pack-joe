@@ -3271,15 +3271,18 @@ of levels 1-3 contains either, so the faithful port plays exactly as before. `--
   ticks of invulnerability; a crush (`Player._unstick` failing) goes through
   `shield_knockback`, which moves Joe to the nearest clear spot within 40 px or leaves him
   until the overlap clears. Joe flickers while invulnerable; a cyan ring shows the shield.
-- **Type 23 turret** `(tile, var, sides)`: entity `Turret`, 16x24 px over two tiles (the object
-  tile is the top one), collision `SH_TURRET` = a synthetic 8x12 half-res rectangle injected
-  into `_SH_CACHE` at index 1000 (SH00.DAT has 258 shapes; shape 2 is a bird-shaped diamond,
-  not a block) as type 6 (touching it kills), interval 0x20. Two tiles tall because Cam asked
-  for a taller turret when the stacked twin shot flew over the one-tile version. Present while `var != 0`; `--no-enemies` / E hides it.
+- **Type 23 turret** `(tile, var, sides)`: entity `Turret`, 16x18 px standing on the bottom of
+  its tile (6 px poke above it), collision `SH_TURRET` = a synthetic 8x9 half-res rectangle
+  injected into `_SH_CACHE` at index 1000 (SH00.DAT has 258 shapes; shape 2 is a bird-shaped
+  diamond, not a block) as type 6 (touching it kills), interval 0x20. It went one tile → two
+  tiles (Cam: "make the turret taller" when the stacked twin shot flew over it) → 18 px (Cam:
+  "too tall now"). `TURRET_WARMUP` = 2000 ticks after room entry before it may fire, because
+  Cam died every time he entered the room with `--start` (Joe lands in its row). Present while `var != 0`; `--no-enemies` / E hides it.
   It fires `TurretShot` (2 px per 12 ticks along its row, no collision bytes of its own) when
   Joe is within `TURRET_RANGE_Y` = 14 px of its row, at least 16 px away horizontally, on an
   allowed side (0 left, 1 right, 2 either) and no wall byte lies on the row between them;
-  `TURRET_COOLDOWN` = 1400 ticks between shots; it never fires while Joe is dead or beaming.
+  `TURRET_COOLDOWN` = 1400 ticks between shots, first one no sooner than `TURRET_WARMUP`
+  after entry; it never fires while Joe is dead or beaming.
   The bullet kills the original way: `cb_restore` under shape 1 wipes Joe's marker and
   0x0CCC's check finds the hole. A hit is anything but Joe's marker intruding on the turret's
   own bytes (a shot's erase); `TURRET_HP` = 3 hits → `EnemyExplosion`, bytes restored. Like
@@ -3296,7 +3299,7 @@ of levels 1-3 contains either, so the faithful port plays exactly as before. `--
   words happened to spell (4, 17, now 22). Entries at or past 68 and entries aliasing the
   trailer offset now get an empty list.
 - Test level room 7 (between 4 and 5): twin-shot pack at col 3, turret on the floor at col 10
-  (rows 13-14) firing both ways (vars 24/25/26, all default ON), shield pack at col 16. Joe either flies
+  firing both ways (vars 24/25/26, all default ON), shield pack at col 16. Joe either flies
   over the turret or shoots it three times.
 - Tests: `tests/test_enhanced.py` (10: originals untouched, room contents, classic flag,
   pickup remembered across re-entry, twin shot count, shield absorbs one ball death then

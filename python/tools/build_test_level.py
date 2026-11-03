@@ -193,14 +193,14 @@ def build():
     r.obj(18, 14, 14, 22, 23)
 
     # ---- Room 7: enhanced mode (packs and a turret) ----
-    # The two-tile turret stands on the floor at walking height, so Joe must fly over it or
-    # shoot it three times; it fires at him whenever he is level with it on either side.
+    # The turret stands on the floor at walking height, so Joe must fly over it or shoot it
+    # three times; after a warm-up it fires at him whenever he is level with it on either side.
     r = rooms[7]
     r.frame(left_exit=True, right_exit=True)
     r.exits[6] = r.exits[7] = 4
     r.exits[2] = r.exits[3] = 5
     r.obj(22, 3, 13, 1, 24)                  # twin-shot pack (kind 1), gone once var 24 is 0
-    r.obj(23, 10, 13, 26, 2)                 # turret (rows 13-14), present while var 26 is on, fires both ways
+    r.obj(23, 10, 14, 26, 2)                 # turret standing on the floor, present while var 26 is on, fires both ways
     r.obj(22, 16, 13, 2, 25)                 # shield pack (kind 2), var 25
 
     # ---- Rooms 5 and 6: teleporters ----

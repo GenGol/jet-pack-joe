@@ -1403,10 +1403,10 @@ class TimeoutBeam(Entity):
 #             same path. kind 2 SHIELD: absorbs
 #             one death (any cause, including a crush, which throws Joe to the nearest free spot),
 #             then Joe is invulnerable for SHIELD_INVULN ticks.
-#   23 turret (tile, var, sides): a floor- or wall-mounted gun two tiles tall (the object tile
-#             is the top one; collision = SH_TURRET, a solid 16x24 rectangle, as type 6, so
-#             touching it kills, and both twin shots land on it). Every 0x20 ticks it looks for
-#             Joe within TURRET_RANGE_Y px of
+#   23 turret (tile, var, sides): a 16x18 px gun standing in its tile (its body pokes 6 px above
+#             the tile; collision = SH_TURRET, the same solid rectangle, as type 6, so touching it
+#             kills). It cannot fire for TURRET_WARMUP ticks after the room is entered. Every
+#             0x20 ticks it looks for Joe within TURRET_RANGE_Y px of
 #             its row on an allowed side (0 left, 1 right, 2 either) with no wall between them,
 #             and fires a bullet every TURRET_COOLDOWN ticks. Present while `var` is non-zero.
 #             Each shot of Joe's that lands takes one of TURRET_HP hit points; it then explodes
@@ -1417,10 +1417,11 @@ PACK_NAMES = {PACK_TWIN: "TWIN SHOT", PACK_SHIELD: "SHIELD"}
 SHIELD_INVULN = 1750             # ticks (~1.5 s) Joe cannot die after his shield takes a hit
 TURRET_HP = 3
 TURRET_COOLDOWN = 1400           # ticks between turret shots (~1.2 s)
+TURRET_WARMUP = 2000             # ticks after room entry before the first shot (~1.7 s)
 TURRET_RANGE_Y = 14              # px: Joe's centre must be this close to the turret's row
 TURRET_SHOT_INTERVAL = 12        # ticks per 2 px step (~194 px/s; Joe climbs at 116 px/s)
-SH_TURRET = 1000                 # a synthetic collision shape (SH00.DAT has 258): 8x12 half-res
-_SH_CACHE[SH_TURRET] = tuple((row, -4, 8) for row in range(-6, 6))   # = the 16x24 px body
+SH_TURRET = 1000                 # a synthetic collision shape (SH00.DAT has 258): 8x9 half-res
+_SH_CACHE[SH_TURRET] = tuple((row, -4, 8) for row in range(-4, 5))   # = the 16x18 px body
 
 # Pixel art for the new objects: one hex digit per pixel = palette index 0-15 (the EGA colours
 # shared by every level palette), "." = transparent.
@@ -1453,10 +1454,7 @@ ART = {
         "..888888888888",
         "..8.........8.",
     ),
-    "turret": (                  # 16x24, facing right; flipped for left. Barrel on rows 11-12.
-        "......7777......",
-        ".....7FFFF7.....",
-        ".....7F88F7.....",
+    "turret": (                  # 16x18, facing right; flipped for left. Barrel on rows 7-8.
         "......7777......",
         "......7887......",
         "....77777777....",
@@ -1464,15 +1462,12 @@ ART = {
         "..7F88888888F7..",
         "..7F8CC88888F7..",
         "..7F8CC88888F7..",
-        "..7F88888888F7..",
         "..7F88888888F888",
         "..7F88888888F7FF",
         "..7F88888888F7..",
         "..7FFFFFFFFFF7..",
         "...777777777....",
         "..8888888888....",
-        ".877777777778...",
-        ".877777777778...",
         ".877777777778...",
         ".877777777778...",
         ".877777777778...",
@@ -1574,18 +1569,18 @@ class TurretShot(Entity):
 
 
 class Turret(Entity):
-    """Object type 23. (x, y) is the centre of its 16x24 body (two tiles; the object tile is the
-    top one). Its collision is SH_TURRET, the same 16x24 rectangle."""
+    """Object type 23. (x, y) is the centre of its 16x18 body, which stands on the bottom of
+    its tile and pokes 6 px above it. Its collision is SH_TURRET, the same rectangle."""
     interval = 0x20
 
     def __init__(self, g, obj):
-        super().__init__(obj["x"] + 8, obj["y"] + 12, g.tick)
+        super().__init__(obj["x"] + 8, obj["y"] + 3, g.tick)
         self.sides = obj["params"][2] if len(obj["params"]) > 2 else 2
         self.facing = 0 if self.sides == 0 else 1
         self.hp = TURRET_HP
         self.hit_flash = 0          # frames left of the white "hit" look
         self.muzzle = 0             # frames left of the muzzle flash
-        self.fired_at = -1e9
+        self.fired_at = g.tick + TURRET_WARMUP - TURRET_COOLDOWN   # first shot after the warm-up
         self.room = g.current_room
         self.art = g.art
         self.write(g.cbm)
@@ -1622,7 +1617,7 @@ class Turret(Entity):
             return
         self.fired_at = g.tick
         self.muzzle = 4
-        g.entities.append(TurretShot(g, self.x + (12 if side else -12), self.y, side))
+        g.entities.append(TurretShot(g, self.x + (12 if side else -12), self.y - 1, side))
         play_sound(SND_TURRET)
 
     @staticmethod
@@ -1638,13 +1633,13 @@ class Turret(Entity):
         name = "turret_hit" if self.hit_flash else "turret"
         if self.facing == 0:
             name += "_l"
-        surface.blit(self.art[name], (self.x - 8, self.y - 12))
+        surface.blit(self.art[name], (self.x - 8, self.y - 9))
         if self.hit_flash:
             self.hit_flash -= 1
         if self.muzzle:
             self.muzzle -= 1
             fx = self.x + 8 if self.facing else self.x - 12
-            surface.blit(self.art["flash"], (fx, self.y - 2))
+            surface.blit(self.art["flash"], (fx, self.y - 3))
 
 
 class JetPackJoe:

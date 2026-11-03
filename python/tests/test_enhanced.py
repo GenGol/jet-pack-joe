@@ -13,7 +13,8 @@ import pygame                     # noqa: E402
 LEVEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "TESTLEVEL.JPL")
 ROOM = 7
 FLOOR_Y = 164                     # Joe standing on the floor of a test-level room
-TURRET_X, TURRET_Y = 10 * 16 + 8, 13 * 12 + 12          # centre of the two-tile body
+TURRET_X, TURRET_Y = 10 * 16 + 8, 14 * 12 + 3           # centre of the 16x18 body in its tile
+WARMUP_FRAMES = int(J.TURRET_WARMUP / J.TICKS_PER_FRAME) + 1
 
 
 def armoury(enhanced=True, enemies=True):
@@ -40,7 +41,7 @@ def test_room_has_two_packs_and_a_turret():
     t = d.entities(J.Turret)
     assert len(t) == 1 and (t[0].x, t[0].y) == (TURRET_X, TURRET_Y) and t[0].hp == J.TURRET_HP
     total, hist = t[0].check(g.cbm, 0)
-    assert total == 8 * 12 and hist[J.CT_ENEMY] == total, "a solid 16x24 block of type 6"
+    assert total == 8 * 9 and hist[J.CT_ENEMY] == total, "a solid 16x18 block of type 6"
 
 
 def test_classic_flag_ignores_packs_and_turrets():
@@ -109,6 +110,8 @@ def test_turret_fires_at_joe_in_its_row_and_the_bullet_kills():
     d, g = armoury()
     d.place(TURRET_X + 70, FLOOR_Y)
     assert abs(g.player.y - TURRET_Y) <= J.TURRET_RANGE_Y
+    d.run(WARMUP_FRAMES - 6, until=lambda g: any(isinstance(e, J.TurretShot) for e in g.entities))
+    assert not d.entities(J.TurretShot), "no shot during the warm-up (Cam died on --start entry)"
     d.run(30, until=lambda g: any(isinstance(e, J.TurretShot) for e in g.entities))
     bullets = d.entities(J.TurretShot)
     assert bullets and bullets[0].speed > 0, "a bullet flies right, toward Joe"
@@ -120,7 +123,7 @@ def test_turret_fires_at_joe_in_its_row_and_the_bullet_kills():
 def test_turret_does_not_fire_at_joe_above_its_row():
     d, g = armoury()
     d.place(TURRET_X + 70, 60)
-    for _ in range(120):
+    for _ in range(WARMUP_FRAMES + 60):
         d.run(1, keys={"thrust"} if g.player.y > 60 else set())
     assert not any(isinstance(e, J.TurretShot) for e in g.entities) and g.death is None
 
