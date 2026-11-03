@@ -362,6 +362,8 @@ class Entity:
     else is destroyed when Joe leaves the room."""
     interval = 20
     mobile = False
+    keeps_slot = False   # non-mobile, but its HIDE path (AX=3) keeps the slot (state 2) instead
+                         # of destroying it, so it waits dormant in its room (the sentry)
 
     def __init__(self, x, y, tick):
         self.x, self.y = int(x), int(y)
@@ -374,6 +376,12 @@ class Entity:
     def activate(self, g):
         """AX=1: (re)write collision and become live."""
         self.visible = 1
+
+    def hide(self, g):
+        """AX=3 for a keeps_slot object: erase its collision in the room being left."""
+
+    def destroy(self, g):
+        """AX=5: side effects of the slot being freed (the stale sweep 0x0A13)."""
 
     def cross(self, g, nx, ny):
         """0x0521 exit test for a move to (nx, ny). Inside the room → False. Otherwise the object
@@ -435,16 +443,36 @@ class Sentry(Entity):
     """Object type 14, handler 0x22EF. Pink UFO (sprites 39/40/41 = moving left / hovering /
     moving right) that chases Joe with Joe's own jetpack physics (gravity 41, thrust 82,
     velocity clamped to ±1000 thousandths/update). Collision shapes 19/20/21 written as type 1.
-    It never checks for intrusions, so it cannot be killed. Two glow sprites (50-53) trail it."""
+    It never checks for intrusions, so it cannot be killed. Two glow sprites (50-53) trail it.
+    Init (0x2317) is skipped when its variable is 0 and otherwise CLEARS the variable (0x2335);
+    slot state is 2, not 3, and it never calls ROOM_TRANSITION, so it does not follow Joe out.
+    Its HIDE path (0x237B, room change) erases it and sets visible 0 but keeps the slot, so the
+    main loop (0x06F8) re-activates it where it was if Joe is back before the stale sweep
+    (0x0A13, ~6 s) destroys it; DESTROY (0x23A0) sets the variable back to 0xFF, so the next
+    visit spawns a fresh one at its tile."""
     interval = 27
+    keeps_slot = True
 
-    def __init__(self, g, x, y):
+    def __init__(self, g, x, y, var=0):
         super().__init__(x, y, g.tick)
         self.facing = 1    # [DI+0x1C]
         self.vy = 0        # [DI+0x16]
         self.frac = 0      # [DI+0x18]
         self.thrust = 0    # [DI+0x1D]: 0 idle, 2 thrusting (selects glow sprite 50/51 vs 52/53)
-        cb_write(g.cbm, 19 + self.facing, self.x >> 1, self.y >> 1, CT_WALL)   # activate (0x23EA)
+        self.var = var     # [DI+0x1F]
+        self.room = g.current_room
+        g.switch_state[var] = 0                                              # 0x2335
+        self.activate(g)
+
+    def activate(self, g):
+        self.visible = 1
+        cb_write(g.cbm, 19 + self.facing, self.x >> 1, self.y >> 1, CT_WALL)   # 0x23EA
+
+    def hide(self, g):
+        cb_restore(g.cbm, g.cbm_bak, 19 + self.facing, self.x >> 1, self.y >> 1)   # 0x2393
+
+    def destroy(self, g):
+        g.switch_state[self.var] = 0xFF                                      # 0x23A5
 
     def update(self, g):
         cbm, backup = g.cbm, g.cbm_bak
@@ -1541,8 +1569,10 @@ class Pack(Entity):
 class TurretShot(Entity):
     """A turret's bullet: 2 px per update along its row. Hitting Joe's marker restores the
     backup under shape 1, which is how every original hazard kills him (0x0CCC), so his shield
-    sees it like any other death. Anything else solid stops it with a wall explosion."""
+    sees it like any other death. Anything else solid stops it with a wall explosion. Like
+    Joe's shots it is mobile: it crosses room edges and follows Joe into the next room."""
     interval = TURRET_SHOT_INTERVAL
+    mobile = True
 
     def __init__(self, g, x, y, direction):
         super().__init__(x, y, g.tick)
@@ -1553,8 +1583,7 @@ class TurretShot(Entity):
     def update(self, g):
         cbm, backup = g.cbm, g.cbm_bak
         nx = self.x + self.speed
-        if g.exit_room(self.room, nx, self.y) is not None:
-            self.alive = False
+        if self.cross(g, nx, self.y):
             return
         self.x = nx
         hx, hy = nx >> 1, self.y >> 1
@@ -1563,7 +1592,8 @@ class TurretShot(Entity):
             return
         if hist[CT_JOE]:
             cb_restore(cbm, backup, 1, hx, hy)
-        g.player.explosions.append(Explosion(nx, self.y))
+        if self.visible == 1 and self.room == g.current_room:
+            g.player.explosions.append(Explosion(nx, self.y))
         self.alive = False
 
     def draw(self, surface, sprites, frame):
@@ -2347,6 +2377,9 @@ class JetPackJoe:
                 c.visible = 2
                 clones.append(c)
                 self.make_dormant(e)
+            elif e.keeps_slot and e.alive and e.visible == 1:      # AX=3 HIDE keeps the slot
+                e.hide(self)
+                self.make_dormant(e)
         t = self.tick
         limit = t + 12000
         while clones and t < limit:
@@ -2370,7 +2403,7 @@ class JetPackJoe:
                 continue
             if e.room == self.current_room and e.next_time <= self.tick:
                 e.activate(self)
-                if self.enhanced and isinstance(e, Shot):
+                if self.enhanced and isinstance(e, (Shot, TurretShot)):
                     self.catch_up(e)
                 if e.alive and e.visible == 1:
                     self.entities.append(e)
@@ -2394,13 +2427,22 @@ class JetPackJoe:
     def purge_dormant(self):
         """Timer tick 0x0A13 (once per second, with the TIME countdown): dormant objects more
         than 0x1B58 (7000) ticks past their time are destroyed (AX=5)."""
-        self.dormant = [e for e in self.dormant if self.tick - e.next_time < 0x1B58]
+        keep = []
+        for e in self.dormant:
+            if self.tick - e.next_time < 0x1B58:
+                keep.append(e)
+            else:
+                e.destroy(self)
+        self.dormant = keep
 
     def jump_to_room(self, room):
         """Debug helper (G key, [ ], --start): switch rooms without a door and drop Joe on the
         nearest free spot so he does not start inside a wall or a pit."""
         if not 0 <= room < self.num_rooms:
             return False
+        for e in self.dormant + self.entities:
+            if e.keeps_slot:
+                e.destroy(self)
         self.dormant = []
         self.current_room = room
         self.beam_in = self.beam_out = None
@@ -2454,7 +2496,7 @@ class JetPackJoe:
             if t == 14:
                 var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
                 if self.switch_state[var_id] != 0:        # 0x232E: skipped if its variable is 0
-                    self.entities.append(Sentry(self, obj["x"], obj["y"]))
+                    self.entities.append(Sentry(self, obj["x"], obj["y"], var_id))
             elif t == 11:
                 self.entities.append(BirdGen(self, tile))
             elif t == 12:

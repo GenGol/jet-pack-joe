@@ -177,6 +177,68 @@ def test_classic_mode_resumes_the_parked_shot_like_the_original():
     assert shots and shots[0].x < 40, "GAME.EXE 0x06F8 wakes the shot where it was parked"
 
 
+def hover(d, g, frames, altitude, keys=()):
+    for _ in range(frames):
+        d.run(1, set(keys) | ({"thrust"} if g.player.y > altitude else set()))
+
+
+def test_turret_bullet_follows_joe_into_the_next_room():
+    """Cam: the bullet should follow like Joe's shots do. Joe stands by room 7's left exit in
+    the turret's row, waits for the shot, and steps out left; the bullet arrives in room 4."""
+    d, g = armoury()
+    d.place(30, FLOOR_Y)
+    d.run(WARMUP_FRAMES + 30, until=lambda g: any(isinstance(e, J.TurretShot) for e in g.entities))
+    assert d.entities(J.TurretShot) and g.death is None
+    d.run(60, keys={"left"}, until=lambda g: g.current_room == 4)
+    assert g.current_room == 4 and g.death is None
+    assert any(e.room == 4 for e in g.dormant if isinstance(e, J.TurretShot)), "clone parked in room 4"
+    # Joe arrives at room 4's right edge, exactly where the bullet will come in: climb out of
+    # its row, then watch it fly past underneath.
+    seen = []
+    for _ in range(90):
+        d.run(1, {"thrust"} if g.player.y > 100 else set())
+        seen += [(e.x, e.y) for e in g.entities if isinstance(e, J.TurretShot)]
+    assert seen and g.death is None, "the bullet should wake in room 4 and keep flying"
+    assert seen[0][0] > 300 and seen[-1][0] < seen[0][0], f"it enters at the right edge and flies left: {seen[:3]}"
+
+
+def test_sentry_waits_where_it_was_and_respawns_after_the_sweep():
+    """GAME.EXE: the sentry's init clears its variable (0x2335); leaving the room hides it but
+    keeps its slot (0x237B), so it is re-activated where it was if Joe is back within the
+    stale sweep's 0x1B58 ticks; the sweep destroys it and restores the variable (0x23A5), so a
+    later visit spawns a fresh one at its tile. Cam saw the port reset it every time."""
+    d = Driver(level_file=LEVEL)
+    d.goto(3, 4)
+    g = d.g
+    sentry = d.entities(J.Sentry)[0]
+    home = (sentry.x, sentry.y)
+    assert g.switch_state[sentry.var] == 0, "spawning clears the variable"
+    d.place(300, FLOOR_Y)
+    d.run(90)                                            # it chases Joe for a while
+    d.run(60, keys={"right"}, until=lambda g: g.current_room == 7)
+    assert g.current_room == 7 and sentry in g.dormant and sentry.visible == 0
+    left_at = (sentry.x, sentry.y)
+    assert abs(left_at[0] - home[0]) + abs(left_at[1] - home[1]) > 40, "it should have chased Joe"
+    hover(d, g, 30, 60)                                  # stay clear of the turret's row
+    d.run(120, keys={"left"}, until=lambda g: g.current_room == 4)
+    back = d.entities(J.Sentry)
+    # On wake it catches up on the updates it missed (8 per frame, 1 px each, with the fall
+    # speed it had when hidden), and two frames run before this line: allow up to 24 px.
+    assert back == [sentry] and abs(sentry.x - left_at[0]) <= 24 and abs(sentry.y - left_at[1]) <= 24, \
+        f"sentry should resume near {left_at}, is at {(sentry.x, sentry.y)}"
+    assert g.switch_state[sentry.var] == 0
+    # Leave again and stay away past the sweep: it is destroyed and the variable restored.
+    d.place(300, FLOOR_Y)
+    d.run(60, keys={"right"}, until=lambda g: g.current_room == 7)
+    hover(d, g, int(0x1B58 / J.TICKS_PER_FRAME) + 70, 60)
+    assert sentry not in g.dormant and g.switch_state[sentry.var] == 0xFF
+    d.run(120, keys={"left"}, until=lambda g: g.current_room == 4)
+    fresh = d.entities(J.Sentry)
+    assert len(fresh) == 1 and fresh[0] is not sentry and abs(fresh[0].x - home[0]) <= 2 \
+        and abs(fresh[0].y - home[1]) <= 2, "a fresh sentry spawns at its tile"
+    assert g.switch_state[fresh[0].var] == 0
+
+
 def test_status_bar_shows_the_pack():
     d, g = armoury()
     g.player.pack = J.PACK_TWIN

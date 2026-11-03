@@ -3328,3 +3328,34 @@ probably frame-rate drift: game time advances per rendered frame). Changes:
 - Tests: `test_enhanced.py::test_parked_shot_is_caught_up_when_joe_follows` and
   `test_classic_mode_resumes_the_parked_shot_like_the_original`; `test_follow.py`'s sweep
   test now checks the once-per-second granularity.
+
+### Sentry keeps its slot; turret bullets cross rooms (2026-11-03)
+
+Cam asked whether the sentry in test-level room 4 should follow him out, and then noticed it
+reset to its tile when he stepped out and straight back. Decoded from the handler 0x22EF:
+- Init 0x2317: `call 0x7be` (slot), reads the tile and the variable; if `[var+0x3067]` is 0 the
+  init bails out (0x2374), else it **clears the variable** (0x2335), stores the id in [DI+0x1F],
+  sets slot state **2** (0x2343, not 3: it is never cloned), interval 0x1B, handler 0x22EF,
+  facing 1, then runs AX=1.
+- No `call 0x521` anywhere in 0x22EF-0x2525: the sentry never leaves its room.
+- AX=3 HIDE (0x237B, run by the room change for every non-mobile object): frees its three
+  sprites, DRAW_VISUAL shape 0x13 at its position, visible = 0 — **the slot stays** (state 2).
+  So the main loop (0x06F8: state ≠ 0, Joe's room, next_time passed, visible ≠ 1 → AX=1) wakes
+  it where it was when Joe comes back, and the per-second sweep 0x0A13 destroys it after
+  0x1B58 ticks.
+- AX=5 DESTROY (0x23A0): `[var+0x3067] = 0xFF`, state 0 — the variable comes back, so the next
+  visit after the sweep spawns a fresh sentry at its tile. The clearing at init is what stops a
+  second sentry spawning while the first waits dormant.
+- AX=1 ACTIVATE (0x23B0): allocates sprites 0x32/0x32/0x27 (sorted), DRAW_COLLISION shape
+  0x13 + facing as type 1, visible = 1.
+Port: `Entity.keeps_slot` (+ `hide`/`destroy` hooks); `carry_mobiles` hides keeps_slot
+objects into `dormant` instead of dropping them; `purge_dormant` calls `destroy`; `Sentry`
+takes its variable, clears it on spawn, restores it on destroy, and `jump_to_room` (debug)
+destroys any sentry it drops so the variable is not lost. On wake the port catches up at most
+8 updates per frame where the original runs the whole backlog in one burst.
+
+Turret bullets (`TurretShot`) are now `mobile` like Joe's shots: they cross edges via
+`cross`, are cloned on a room change and follow Joe (Cam: "the turret bullet doesn't seem to
+follow me into the next room"); the catch-up on wake applies to them too. Tests:
+`test_enhanced.py::test_turret_bullet_follows_joe_into_the_next_room` and
+`test_sentry_waits_where_it_was_and_respawns_after_the_sweep`. 79 tests pass.
