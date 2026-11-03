@@ -88,7 +88,7 @@ def room_state(d, room, switches, start=LEFT_ENTRY):
     d.goto(3, room)
     for var, val in switches.items():
         g.switch_state[var] = val
-    d.run(40)                               # doors take 14 updates to open or close
+    d.run(80)                               # doors take 14 x 0x59 ticks to open or close
     objs = {(o["type"], o["x"] // 16, o["y"] // 12): o for o in g.room_objects[room]}
     return reachable(g, start if start is not None else (g.player.x, g.player.y)), objs
 
@@ -126,8 +126,9 @@ def test_every_room_is_traversable_and_its_gates_gate():
     seen, o = room_state(d, 2, {})
     for key in ((10, 2, 2), (10, 15, 2)):
         assert touches(seen, o[key]["x"], o[key]["y"], 48, 36), f"cage {key} out of reach"
-    for key in ((15, 5, 9), (16, 12, 9)):
-        assert touches(seen, o[key]["x"], o[key]["y"] + 12, 16, 48), f"cannot stand under plate {key}"
+    for key in ((15, 5, 9), (16, 12, 9)):        # plates sweep 52 px from their tile (0x39BF)
+        x0 = o[key]["x"] - (52 if key[0] == 16 else 0)
+        assert touches(seen, x0, o[key]["y"], 52 + 16, 60), f"cannot reach plate {key}'s sweep"
     assert right_exit(seen)
 
     # Room 3: generators only; the floor runs straight through.

@@ -21,7 +21,7 @@ def test_standing_on_sensor_copies_variable_and_lights_tile():
     d = Driver()
     d.goto(2, 13)
     g = d.g
-    d.run(30)                                                   # let the three doors open
+    d.run(80)                                                   # doors open in 14 x 0x59 ticks
     s = min(d.entities(J.SensorSwitch), key=lambda e: e.x)      # pad at (128,144): sw1 22, sw2 41
     door = next(o for o in g.room_objects[13] if o["type"] == 5 and o["params"][1] == s.sw1)
     assert g.switch_state[door["params"][2]] == 14, "door controlled by var 22 should be open"
@@ -41,7 +41,7 @@ def test_sensor_tile_is_drawn_on_screen():
     d = Driver()
     d.goto(2, 13)
     g = d.g
-    d.run(30)                                                   # door above the pad is open
+    d.run(80)                                                   # door above the pad is open
     s = min(d.entities(J.SensorSwitch), key=lambda e: e.x)
     for px, py in ((8, 6), (2, 2), (14, 10)):
         at = (s.col * J.TILE_W + px, s.row * J.TILE_H + py)

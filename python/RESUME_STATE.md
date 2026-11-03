@@ -3181,7 +3181,8 @@ room → [0x23DC]; beam tile → [0x23BF]; then the switch-off list.
 **TIME (0x09DE every 0x48D = 1165 ticks).** If [0x23DA] is 0 → call 0x0A38 AX=0; else
 decrement, convert, and write the three digits into the status buffer with attribute 0x0A.
 **0x0A5E (time has run out):** up to 5 tries: random tile < 0x118 with column <= 17 whose
-3x3 block has no collision in the expanded map (DS:0x5D7, one word per tile) and whose centre
+3x3 block has no foreground tile (DS:0x5D7 is the expanded *foreground* map, one word per
+tile — see the object scheduler notes) and whose centre
 (tile x+0x17, y+0x11) is clear under shape 0x10; allocate a slot: handler 0x0A38, interval
 0x46, counter [DI+0x1C]=15, sound 3. Update draws beam frame `counter` (table DS:0x3389, the
 same 3x3 frames as cage disappear / beam-in), spawns a **Ball** (0x15A2 AX=0) at the centre
@@ -3205,3 +3206,45 @@ A plain launch opens with the title; `--start` and `--level` launches skip it.
 Tests: `tests/test_cutscenes.py` (decoder frame counts, timing, reaper once, thumbs-up →
 level 2, level 3 → credits → title → level 1, time-out balls) and `tests/test_status_bar.py`
 (200-line screen, string/colours, font bytes vs GAME.EXE, debug prompt). 58 tests pass.
+
+### Room objects on the original tick scheduler (2026-11-03)
+
+Cam asked for the last structural gap: doors, fans, switches, fields, cages, plates, pads and
+glow balls stepped once per rendered frame. Now every room object is initialised like its
+handler's AX=0 path and stepped by `update_room_objects` (0x06F8) when its time is due;
+`draw_objects`/`render_foreground` only show the state the last update wrote.
+
+**EXPAND_MAP 0x032A** lays a room out as: DS:0x357 = 320 background tile words, **DS:0x5D7 =
+320 foreground words** (from the 320 fg bytes), DS:0xD57 = 320 collision bytes (word >> 10).
+So **0x4B4 writes the foreground map** (table entry: count, then (offset, tile) pairs, a tile
+of 0 clears the cell) and **0x4D2 writes the background map, skipping cells whose foreground
+word is 0xFF**. The Python's earlier comments had the two swapped; nothing drawn changed
+except that vertical fields, glow balls and beams are now foreground overrides (over Joe) and
+fans of types 1-2 are foreground while 3-4 are background (0x1D40 → 0x4B4, 0x1DBE → 0x4D2).
+
+| Object | Handler | Interval [DI+8] | First update | Per update |
+|---|---|---|---|---|
+| Fans 1-4 | 0x1289.. → 0x1D40/0x1DBE | random(0x64)+0x4B = 75..174, per fan | +random(interval) | frame = (frame+1) % 3, 3x3 tiles |
+| Door 5 | 0x1C51 | 0x59 = 89 | +random(89) | erase shape 3 at old height, state ±1 (0..14), write shape 3, frame table 0x3599 |
+| Switches 6/7 | 0x1305/0x1312 → 0x1B84 | 0x80 = 128 | +random(128) | CHECK shape 4 BL=1; Joe newly present → var 0↔0xFF; fg tile 0xE6/0xFA + (var&1) |
+| Fields 8/9, glow 13 | 0x1336/0x131F/0x134D → 0x1E3C | 0x4F = 79 | +random(79) | var off: DRAW_VISUAL once, frame 4 (glow); on: DRAW_VISUAL shape+1 (wipes Joe's marker = the kill), frame = (frame+1)&3 to fg, DRAW_COLLISION shape (7 / 11 / 5) |
+| Cage 10 | 0x1364 | 0x7D = 125 | +random(125) | var 0 → free slot, erase shape 13; else write shape 13, **CHECK shape 14 BL=0** (the two columns just OUTSIDE the walls: Joe presses against the cage from outside), hit → var = 0, beam 0x1F18 at the cage, sounds 3+4, next_time += 0x302; frame = (frame+1)&3 force-field tiles 0x3AF5 |
+| Beam 0x1F18 (cage, beam-out) | — | 0x46 = 70 | now | frames 0..16 of DS:0x3389; frees the sprite at 12; at the 18th update frees itself and `dec [0x305F]`, 0 → [0x23BA]=1 (level complete) |
+| Beam-in 0x1FBF | — | 0x46 | +0x1F4 (500) | frames 15..0 then blank; Joe created at 12 (0xC7E); Joe's first update at +0x410 after the first frame (0x2006) |
+| Plates 15/16 | 0x17A0/0x189B | 0xA = 10 | now | counter++; 3 of 4 updates just rewrite shape 18; the 4th erases it, var = (var+1) % 52, table 0x39BF (x, frame, col), frames 0x3995/0x39A9 + trail tile 0x47 in fg rows +1/+3, write shape 18 at the new x |
+| Toggle 17 | 0x213C | 0x80 | +random(128) | CHECK shape 4 BL=1; newly present → NOT var1 (and var2); bg tile 0x22C + (var2&1) + 2*(var1&1) |
+| Time-out beam 0x0A38 | — | 0x46 | now | (see above) |
+
+Consequences: a door now takes 14 × 89 = 1246 ticks ≈ 1.07 s (was 0.25 s); plates cycle in
+52 × 40 = 2080 ticks ≈ 1.8 s (was 3.5 s); fields flicker at 14.7 fps; the beam-in waits 0.43 s
+after the room loads and Joe can move from its second-to-last frame; the cage walls vanish
+770 ticks after the touch while the beam is still playing, and the captive is counted 1190
+ticks after it. Joe is 28 px wide, so the cage's shape-14 columns mean a rescue is Joe
+flying/walking into the side of the cage, not standing inside it (the old Python tested a
+box overlap). The debug jump (`jump_to_room`) resets Joe's next_time so tests and the G key
+are not held by the beam-in wait.
+
+Tests: `tests/test_scheduler.py` (intervals, door 14 × 0x59, fan cadence, plate 40-tick
+steps, cage beam cadence and late captive count, beam-in delay and Joe release). The cage
+tests' helper `touch_cage` hovers beside a cage at wall height and pushes into it; door
+waits in the switch/level tests were lengthened to the real opening time. 64 tests pass.

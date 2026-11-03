@@ -47,11 +47,16 @@ def test_birds_spawn_and_kill_joe():
     d = Driver()
     d.goto(0, 8)
     gen = d.entities(J.BirdGen)[0]
-    # Stand in the generator's column so the bird's laser (shape 15) finds Joe.
-    d.place(gen.x, max(24, gen.y - 60))
+    # Hover in the generator's column so the bird's laser (shape 15) finds Joe, high enough
+    # not to sit on the nest: anything inside shape 2 there, Joe included, blocks a spawn.
+    jx, jy = d.place(gen.x, max(24, gen.y - 60))
     seen = []
-    d.run(3000, until=lambda g: (seen.append(1) if any(isinstance(e, Bird) for e in g.entities) else None)
-          or g.death is not None)
+    for _ in range(3000):
+        d.run(1, keys={"thrust"} if d.g.player.y > jy else set())
+        if any(isinstance(e, Bird) for e in d.g.entities):
+            seen.append(1)
+        if d.g.death is not None:
+            break
     assert seen, "no bird ever spawned in L1 R8"
     assert d.g.death is not None, "bird or laser should have killed Joe standing in its column"
 

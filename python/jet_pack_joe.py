@@ -1510,10 +1510,10 @@ class JetPackJoe:
         fg_overrides = {}
         if room_idx in self.room_objects:
             for obj in self.room_objects[room_idx]:
-                if obj["type"] in (6, 7) and "fg_tile" in obj:
+                if "fg_tile" in obj:
                     fg_overrides[obj["params"][0]] = obj["fg_tile"]
-                if obj["type"] in (1, 2, 3, 4, 5, 9, 10, 15, 16) and "fg_tiles" in obj:
-                    fg_overrides.update(obj["fg_tiles"])
+                fg_overrides.update(obj.get("fg_tiles", {}))
+        fg_overrides.update(self.beam_fg_tiles())
         fg_bytes = map_data[base + 640:base + 960]
         for i, b in enumerate(fg_bytes):
             tile_id = fg_overrides.get(i, b)
@@ -1571,97 +1571,167 @@ class JetPackJoe:
                                     "x": px, "y": py, "anim": 0, "timer": 0})
             self.room_objects[room] = objects
 
-    def draw_objects(self, surface, room_idx):
-        """Draw room objects using their sprites."""
-        if room_idx not in self.room_objects:
+    # ------------------------------------------------------------------
+    # Room objects (fans, doors, switches, fields, cages, plates, pads, glow balls, beams).
+    # Each is a slot in the original's object table: its init handler (AX=0) sets a tick
+    # interval and a first update time, the main loop (0x06F8) runs it whenever that time has
+    # passed, and the update rewrites its collision shape and its foreground/background tiles.
+    # Drawing only shows the state the last update left behind.
+    # ------------------------------------------------------------------
+    OBJ_INTERVAL = {5: 0x59, 6: 0x80, 7: 0x80, 8: 0x4F, 9: 0x4F, 10: 0x7D, 13: 0x4F,
+                    15: 0xA, 16: 0xA, 17: 0x80}
+    FAN_FRAMES = {1: (200, (0, 1, 2)), 2: (200, (0, 2, 1)), 3: (440, (0, 1, 2)), 4: (440, (0, 2, 1))}
+    VFIELD_TILES = ((81, 101, 121, 141, 161, 181), (82, 102, 122, 142, 162, 182),
+                    (83, 103, 123, 143, 163, 183), (80, 100, 120, 140, 160, 180))
+    HFIELD_TILES = ((64, 65, 66, 67, 68, 69), (104, 105, 106, 107, 108, 109),
+                    (84, 85, 86, 87, 88, 89), (124, 125, 126, 127, 128, 129))
+    GLOW_FRAMES = ((94, 95, 114, 115), (96, 97, 116, 117), (134, 135, 154, 155),
+                   (136, 137, 156, 157), (138, 139, 158, 159))
+    CAGE_FF_TILES = (232, 233, 252, 253)                          # DS:0x3AF5
+    DOOR_FRAMES = [                                                # DS:0x3599
+        [(0, 144), (20, 164), (40, 164), (60, 184)], [(0, 145), (20, 165), (40, 165), (60, 185)],
+        [(0, 146), (20, 166), (40, 166), (60, 186)], [(0, 147), (20, 167), (40, 167), (60, 187)],
+        [(0, 144), (20, 164), (40, 149), (60, 187)], [(0, 145), (20, 165), (40, 169), (60, 187)],
+        [(0, 146), (20, 166), (40, 189), (60, 187)], [(0, 147), (20, 167), (40, 0), (60, 187)],
+        [(0, 144), (20, 149), (40, 0), (60, 187)], [(0, 145), (20, 169), (40, 0), (60, 187)],
+        [(0, 146), (20, 189), (40, 0), (60, 187)], [(0, 147), (20, 0), (40, 0), (60, 187)],
+        [(0, 148), (20, 0), (40, 0), (60, 187)], [(0, 168), (20, 0), (40, 0), (60, 187)],
+        [(0, 188), (20, 0), (40, 0), (60, 187)],
+    ]
+    PLATE_POS = [                                                  # DS:0x39BF: 52 x (x, frame, col)
+        (0, 0, 0), (2, 1, 0), (4, 2, 0), (6, 3, 0), (8, 4, 0), (10, 5, 0), (12, 6, 0), (14, 7, 0), (16, 8, 0),
+        (18, 1, 1), (20, 2, 1), (22, 3, 1), (24, 4, 1), (26, 5, 1), (28, 6, 1), (30, 7, 1), (32, 8, 1),
+        (34, 1, 2), (36, 2, 2), (38, 3, 2), (40, 4, 2), (42, 5, 2), (44, 6, 2), (46, 7, 2), (48, 8, 2),
+        (50, 1, 3), (52, 2, 3),
+        (50, 1, 3), (48, 0, 3), (46, 7, 2), (44, 6, 2), (42, 5, 2), (40, 4, 2), (38, 3, 2), (36, 9, 2), (34, 1, 2),
+        (32, 0, 2), (30, 7, 1), (28, 6, 1), (26, 5, 1), (24, 4, 1), (22, 3, 1), (20, 9, 1), (18, 1, 1),
+        (16, 0, 1), (14, 7, 0), (12, 6, 0), (10, 5, 0), (8, 4, 0), (6, 3, 0), (4, 9, 0), (2, 1, 0),
+    ]
+    PLATE_LEFT = [                                                 # DS:0x3995
+        [(0, 72), (20, 72), (40, 72), (60, 72), (80, 72)],
+        [(0, 52), (20, 51), (40, 52), (60, 51), (80, 52)],
+        [(0, 191), (20, 190), (40, 191), (60, 190), (80, 191)],
+        [(0, 171), (20, 170), (40, 171), (60, 170), (80, 171), (1, 172), (21, 172), (41, 172), (61, 172), (81, 172)],
+        [(0, 151), (20, 150), (40, 151), (60, 150), (80, 151), (1, 152), (21, 152), (41, 152), (61, 152), (81, 152)],
+        [(0, 131), (20, 130), (40, 131), (60, 130), (80, 131), (1, 132), (21, 132), (41, 132), (61, 132), (81, 132)],
+        [(0, 111), (20, 110), (40, 111), (60, 110), (80, 111), (1, 112), (21, 112), (41, 112), (61, 112), (81, 112)],
+        [(0, 91), (20, 90), (40, 91), (60, 90), (80, 91), (1, 92), (21, 92), (41, 92), (61, 92), (81, 92)],
+        [(0, 0), (20, 71), (40, 0), (60, 71), (80, 0), (1, 72), (21, 72), (41, 72), (61, 72), (81, 72)],
+        [(0, 191), (20, 190), (40, 191), (60, 190), (80, 191), (1, 0), (21, 0), (41, 0), (61, 0), (81, 0)],
+    ]
+    PLATE_RIGHT = [                                                # DS:0x39A9
+        [(0, 191), (20, 191), (40, 191), (60, 191), (80, 191)],
+        [(0, 52), (20, 53), (40, 52), (60, 53), (80, 52)],
+        [(0, 72), (20, 73), (40, 72), (60, 73), (80, 72)],
+        [(0, 92), (20, 93), (40, 92), (60, 93), (80, 92), (-1, 91), (19, 91), (39, 91), (59, 91), (79, 91)],
+        [(0, 112), (20, 113), (40, 112), (60, 113), (80, 112), (-1, 111), (19, 111), (39, 111), (59, 111), (79, 111)],
+        [(0, 132), (20, 133), (40, 132), (60, 133), (80, 132), (-1, 131), (19, 131), (39, 131), (59, 131), (79, 131)],
+        [(0, 152), (20, 153), (40, 152), (60, 153), (80, 152), (-1, 151), (19, 151), (39, 151), (59, 151), (79, 151)],
+        [(0, 172), (20, 173), (40, 172), (60, 173), (80, 172), (-1, 171), (19, 171), (39, 171), (59, 171), (79, 171)],
+        [(0, 0), (20, 71), (40, 0), (60, 71), (80, 0), (-1, 191), (19, 191), (39, 191), (59, 191), (79, 191)],
+        [(0, 72), (20, 73), (40, 72), (60, 73), (80, 72), (-1, 0), (19, 0), (39, 0), (59, 0), (79, 0)],
+    ]
+    BEAM_INTERVAL = 0x46                                            # 0x1F4E / 0x200C
+    BEAM_IN_DELAY = 0x1F4                                           # 0x2000: first frame +500
+    JOE_AFTER_BEAM = 0x410                                          # 0x2006: Joe's first update
+
+    def init_room_object(self, obj):
+        """The handler's AX=0 init for one object of the room being entered."""
+        t = obj["type"]
+        for k in ("fg_tiles", "fg_tile", "bg_tiles", "gb_dormant"):
+            obj.pop(k, None)
+        obj["frame"] = 0                   # [DI+0xE] / [DI+0x1C] animation frame
+        obj["touching"] = False            # [DI+0x1D] last CHECK result (switches, pads)
+        obj["field_active"] = False        # [DI+0x1D] of the field handler
+        if t in (1, 2, 3, 4):
+            obj["interval"] = 0x4B + random.randrange(0x64)     # 0x1289: 75..174 ticks
+        elif t in self.OBJ_INTERVAL:
+            obj["interval"] = self.OBJ_INTERVAL[t]
+        else:
+            obj["interval"] = None                               # entities handle it
             return
-        for obj in self.room_objects[room_idx]:
-            ot = obj["type"]
-            obj["timer"] += 1
-            x, y = obj["x"], obj["y"]
-            sp = None
-            if ot in (1, 2, 3, 4):  # fans — 3x3 foreground tile animation
-                base_tiles = [200, 200, 440, 440][ot - 1]
-                frame_order = [[0,1,2], [0,2,1], [0,1,2], [0,2,1]][ot - 1]
-                frame = frame_order[(obj["timer"] // 6) % 3]
-                col = obj["params"][0] % MAP_COLS
-                row = obj["params"][0] // MAP_COLS
-                map_data = self.levels[self.current_level]["map"]
-                base = room_idx * ROOM_BYTES
-                bg_words = struct.unpack_from('<320H', map_data[base:base + 640])
-                # Check if fan is in background layer (draw before Joe) or foreground (after Joe)
-                bi0 = row * MAP_COLS + col
-                bti0 = bg_words[bi0] & 0x3FF if bg_words[bi0] != 0xFFFF else 0
-                fan_in_bg = (200 <= bti0 <= 248) or (440 <= bti0 <= 488)
-                for dr in range(3):
-                    for dc in range(3):
-                        ti = base_tiles + frame * 3 + dc + dr * 20
-                        fg_idx = (row + dr) * MAP_COLS + (col + dc)
-                        if fan_in_bg:
-                            # Background fan: draw opaquely here (before Joe)
-                            # Original uses MODIFY_SCREEN_MAP which writes to background
-                            # and skips positions where foreground tiles exist
-                            if ti < len(self.tile_surfs):
-                                surface.blit(self.tile_surfs[ti], ((col + dc) * TILE_W, (row + dr) * TILE_H))
-                        else:
-                            # Foreground fan: defer to render_foreground (after Joe, with colorkey)
-                            obj.setdefault("fg_tiles", {})[fg_idx] = ti
-                continue
-            elif ot == 8:  # vertical_field — lightning using actual game animation tiles
-                switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
-                col = obj["params"][0] % MAP_COLS
-                row = obj["params"][0] // MAP_COLS
-                cbm = self.get_collision_bitmap(room_idx)[0]
-                backup = self.cbm_backup.get(room_idx)
-                hx = (col * TILE_W) // 2
-                if self.switch_state[switch_id] == 0:
-                    # Field OFF — erase collision (restore from backup, shape 8: 6w×35h rows 1-35)
-                    if obj.get("field_active") and backup:
-                        for r in range(1, 36):
-                            by = (row * TILE_H) // 2 + r
-                            for c in range(1, 7):
-                                bx = hx + c
-                                if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                                    cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
-                        obj["field_active"] = False
-                    continue
-                # 4 frames, 6 rows each. Tiles from game data (confirmed via GAME.EXE disassembly)
-                frame_tiles = [
-                    [81, 101, 121, 141, 161, 181],
-                    [82, 102, 122, 142, 162, 182],
-                    [83, 103, 123, 143, 163, 183],
-                    [80, 100, 120, 140, 160, 180],
-                ]
-                frame = (obj["timer"] // 3) % 4
-                col = obj["params"][0] % MAP_COLS
-                row = obj["params"][0] // MAP_COLS
-                map_data = self.levels[self.current_level]["map"]
-                base = room_idx * ROOM_BYTES
-                bg_words = struct.unpack_from('<320H', map_data, base)
-                y_top = 0
-                for r in range(row - 1, -1, -1):
-                    if (bg_words[r * MAP_COLS + col] >> 10) & 0x3F != 0:
-                        y_top = (r + 1) * TILE_H
-                        break
-                y_bot = SCREEN_H
-                for r in range(row + 1, MAP_ROWS):
-                    if (bg_words[r * MAP_COLS + col] >> 10) & 0x3F != 0:
-                        y_bot = r * TILE_H
-                        break
-                tiles = frame_tiles[frame]
-                ty = y_top
-                ti_idx = 0
-                while ty < y_bot and ti_idx < len(tiles):
-                    ti = tiles[ti_idx]
-                    if ti < len(self.tile_surfs):
-                        ts = self.tile_surfs[ti]
-                        ts.set_colorkey((0, 0, 0))
-                        surface.blit(ts, (col * TILE_W, ty))
-                        ts.set_colorkey(None)
-                    ty += TILE_H
-                    ti_idx += 1
-                # DRAW_VISUAL shape 8 (6w x 35h, cols 1-6, rows 1-35): restore backup first.
-                # This wipes Joe's type-14 marker if he touches the field — that is how it kills.
+        if t == 10 and obj.get("disappear", -1) >= 0:
+            obj["interval"] = None                               # rescued: 0x141B freed it
+            return
+        if t in (15, 16):
+            obj["next_time"] = self.tick                         # 0x17DF: due at once
+            obj["counter"] = 3                                   # 0x17FD: [DI+0x1D]
+            obj["plate_hx"] = obj["x"] // 2
+            obj["fg_tiles"] = {}
+        else:
+            obj["next_time"] = self.tick + random.randrange(obj["interval"])   # random phase
+        self.step_room_object(obj)                               # every init ends with AX=2
+
+    def update_room_objects(self):
+        """0x06F8 for the room's non-entity objects, plus the transporter beams."""
+        room = self.current_room
+        for obj in self.room_objects.get(room, []):
+            n = 0
+            while obj.get("interval") is not None and obj["next_time"] <= self.tick and n < 8:
+                self.step_room_object(obj)
+                if obj.get("interval") is not None:
+                    obj["next_time"] += obj["interval"]
+                n += 1
+            if obj["type"] == 10 and 0 <= obj.get("disappear", -1) < 17:
+                while obj["beam_next"] <= self.tick and obj["disappear"] < 17:
+                    obj["beam_next"] += self.BEAM_INTERVAL     # 0x1F18: one frame per update
+                    obj["disappear"] += 1
+                    if obj["disappear"] == 17:                   # 0x1F87: slot freed, captive counted
+                        self.captive_count = max(0, self.captive_count - 1)
+        self.update_beams()
+
+    def step_room_object(self, obj):
+        """One handler update (AX=2)."""
+        t = obj["type"]
+        room = self.current_room
+        x, y = obj["x"], obj["y"]
+        hx, hy = x // 2, y // 2
+        tile = obj["params"][0]
+        col, row = tile % MAP_COLS, tile // MAP_COLS
+        cbm = self.get_collision_bitmap(room)[0]
+        backup = self.cbm_backup.get(room)
+        if t in (1, 2, 3, 4):                                       # 0x1D40 / 0x1DBE
+            obj["frame"] = (obj["frame"] + 1) % 3
+            base, order = self.FAN_FRAMES[t]
+            tiles = {}
+            for dr in range(3):
+                for dc in range(3):
+                    tiles[(row + dr) * MAP_COLS + col + dc] = base + order[obj["frame"]] * 3 + dc + dr * 20
+            if t in (1, 2):
+                obj["fg_tiles"] = tiles                             # 0x4B4: foreground map
+            else:
+                obj["bg_tiles"] = tiles                             # 0x4D2: background, under fg 255
+        elif t in (6, 7):                                           # 0x1B84 wall switch
+            sw = obj["params"][1] if len(obj["params"]) > 1 else 0
+            hit = cb_check(cbm, 4, hx, hy, CT_WALL)[1][CT_JOE] != 0
+            if hit and not obj["touching"]:
+                self.switch_state[sw] = 0 if self.switch_state[sw] else 0xFF
+            obj["touching"] = hit
+            obj["fg_tile"] = (0xE6 if t == 6 else 0xFA) + (self.switch_state[sw] & 1)
+        elif t == 17:                                               # 0x213C toggle pad
+            sw1 = obj["params"][1] if len(obj["params"]) > 1 else 0
+            sw2 = obj["params"][2] if len(obj["params"]) > 2 else 0
+            hit = cb_check(cbm, 4, hx, hy, CT_WALL)[1][CT_JOE] != 0
+            if hit and not obj["touching"]:
+                self.switch_state[sw1] = ~self.switch_state[sw1] & 0xFF
+                if sw2 != sw1:
+                    self.switch_state[sw2] = ~self.switch_state[sw2] & 0xFF
+            obj["touching"] = hit
+            obj["bg_tiles"] = {tile: 556 + (self.switch_state[sw2] & 1) + 2 * (self.switch_state[sw1] & 1)}
+        elif t == 8:                                                # 0x1336 → 0x1E3C vertical field
+            sw = obj["params"][1] if len(obj["params"]) > 1 else 0
+            bg_words = struct.unpack_from('<320H', self.levels[self.current_level]["map"], room * ROOM_BYTES)
+            y_top = 0
+            for r in range(row - 1, -1, -1):
+                if (bg_words[r * MAP_COLS + col] >> 10) & 0x3F:
+                    y_top = (r + 1) * TILE_H
+                    break
+            y_bot = SCREEN_H
+            for r in range(row + 1, MAP_ROWS):
+                if (bg_words[r * MAP_COLS + col] >> 10) & 0x3F:
+                    y_bot = r * TILE_H
+                    break
+            def restore_field():                                  # DRAW_VISUAL shape 8: 6w x 35h
                 if backup:
                     for r in range(1, 36):
                         by = y_top // 2 + r
@@ -1669,509 +1739,239 @@ class JetPackJoe:
                             bx = hx + c
                             if 0 <= bx < HALF_W and 0 <= by < HALF_H:
                                 cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
-                # Write collision for active vertical field
-                # Shape 7: 2w at cols 3-4, alternating rows 0-34
-                for r in range(0, 35, 2):
-                    by = y_top // 2 + r
-                    for c in [3, 4]:
-                        bx = hx + c
-                        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                            cbm[by * HALF_W + bx] = 1
-                obj["field_active"] = True
-                continue
-            elif ot == 9:  # horiz_field — horizontal lightning, GAME.EXE 0x131F
-                switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
-                col = obj["params"][0] % MAP_COLS
-                row = obj["params"][0] // MAP_COLS
-                cbm = self.get_collision_bitmap(room_idx)[0]
-                backup = self.cbm_backup.get(room_idx)
-                hy = (row * TILE_H) // 2
-                if self.switch_state[switch_id] == 0:
-                    # Field OFF — erase collision (restore from backup, shape 12: 48w×4h rows 1-4)
-                    if obj.get("field_active"):
-                        if backup:
-                            for r in range(1, 5):
-                                by = hy + r
-                                for c in range(48):
-                                    bx = (col * TILE_W) // 2 + c
-                                    if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                                        cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
-                        obj["field_active"] = False
-                        obj.pop("fg_tiles", None)
-                    continue
-                # Field ON — draw animation and collision
-                frame_tiles = [
-                    [64, 65, 66, 67, 68, 69],
-                    [104, 105, 106, 107, 108, 109],
-                    [84, 85, 86, 87, 88, 89],
-                    [124, 125, 126, 127, 128, 129],
-                ]
-                frame = (obj["timer"] // 3) % 4
-                tiles = frame_tiles[frame]
-                # MODIFY_FOREGROUND_MAP: 6 tiles at offsets 0-5 from location
-                obj["fg_tiles"] = {}
-                for i, ti in enumerate(tiles):
-                    fg_idx = row * MAP_COLS + col + i
-                    if fg_idx < MAP_ROWS * MAP_COLS:
-                        obj["fg_tiles"][fg_idx] = ti
-                # Erase old collision (shape 12: 48w×4h rows 1-4), then write new (shape 11: 48w×2h rows 2-3)
+            if self.switch_state[sw] == 0:
+                if obj["field_active"]:
+                    restore_field()
+                    obj["field_active"] = False
+                    obj["fg_tiles"] = {}
+                return
+            restore_field()                                       # wipes Joe's marker: the kill
+            obj["frame"] = (obj["frame"] + 1) & 3
+            tiles = {}
+            ty, i = y_top, 0
+            while ty < y_bot and i < 6:
+                tiles[(ty // TILE_H) * MAP_COLS + col] = self.VFIELD_TILES[obj["frame"]][i]
+                ty += TILE_H
+                i += 1
+            obj["fg_tiles"] = tiles
+            for r in range(0, 35, 2):                               # shape 7: cols 3-4, every 2nd row
+                by = y_top // 2 + r
+                for c in (3, 4):
+                    bx = hx + c
+                    if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                        cbm[by * HALF_W + bx] = CT_WALL
+            obj["field_active"] = True
+        elif t == 9:                                                # 0x131F → 0x1E3C horizontal field
+            sw = obj["params"][1] if len(obj["params"]) > 1 else 0
+            def restore_field():                                  # DRAW_VISUAL shape 12: 48w x 4h
                 if backup:
                     for r in range(1, 5):
                         by = hy + r
                         for c in range(48):
-                            bx = (col * TILE_W) // 2 + c
-                            if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                                cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
-                for r in [2, 3]:
-                    by = hy + r
-                    for c in range(48):
-                        bx = (col * TILE_W) // 2 + c
-                        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                            cbm[by * HALF_W + bx] = 1
-                obj["field_active"] = True
-                continue
-            elif ot in (6, 7):  # right_switch / left_switch
-                switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
-                # Original game uses CHECK_COLLISION with shape 4 (4x2 half-res at +2,+2)
-                # Check if Joe's collision shape overlaps the switch shape
-                jhx, jhy = self.player.x // 2, self.player.y // 2
-                shx, shy = x // 2, y // 2
-                # Switch shape: rows +2..+3, cols +2..+5 from switch half-res pos
-                touching = False
-                for dy, dx_start, count in JOE_COL_SHAPE:
-                    jy = jhy + dy
-                    if jy < shy + 2 or jy > shy + 3:
-                        continue
-                    for i in range(count):
-                        jx = jhx + dx_start + i
-                        if shx + 2 <= jx <= shx + 5:
-                            touching = True
-                            break
-                    if touching:
-                        break
-                if touching:
-                    if not obj.get("touching"):
-                        self.switch_state[switch_id] = 0 if self.switch_state[switch_id] else 0xFF
-                    obj["touching"] = True
-                else:
-                    obj["touching"] = False
-                # Store the tile override for render_foreground
-                # Base tile from original foreground (even=ON, odd=OFF)
-                map_data = self.levels[self.current_level]["map"]
-                fg_byte = map_data[room_idx * ROOM_BYTES + 640 + obj["params"][0]]
-                base_tile = fg_byte & 0xFE  # clear bit 0 to get base
-                state_bit = self.switch_state[switch_id] & 1
-                obj["fg_tile"] = base_tile + state_bit
-                continue
-            elif ot == 10:  # cage — captive sprite + force field tile animation
-                if len(obj["params"]) >= 3 and obj["params"][2] < len(self.sprites):
-                    col = obj["params"][0] % MAP_COLS
-                    row = obj["params"][0] // MAP_COLS
-                    cx, cy = x + 23, y + 10
-                    disappear = obj.get("disappear", -1)
-                    if disappear >= 0:
-                        # Advance every 3 ticks
-                        obj["disappear_tick"] = obj.get("disappear_tick", 0) + 1
-                        if obj["disappear_tick"] >= 3:
-                            obj["disappear_tick"] = 0
-                            obj["disappear"] = disappear + 1
-                        # Disappear animation (17 frames from DS:0x3389)
-                        CAGE_DISAPPEAR = [
-                            [(0,0),(1,213),(2,0),(20,0),(21,213),(22,0),(40,0),(41,213),(42,0)],
-                            [(0,0),(1,214),(2,0),(20,0),(21,214),(22,0),(40,0),(41,214),(42,0)],
-                            [(0,0),(1,215),(2,0),(20,0),(21,215),(22,0),(40,0),(41,215),(42,0)],
-                            [(0,234),(1,214),(2,235),(20,234),(21,214),(22,235),(40,234),(41,214),(42,235)],
-                            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
-                            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
-                            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
-                            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
-                            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
-                            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
-                            [(0,217),(1,217),(2,217),(20,217),(21,217),(22,217),(40,217),(41,217),(42,217)],
-                            [(0,218),(1,218),(2,218),(20,218),(21,218),(22,218),(40,218),(41,218),(42,218)],
-                            [(0,236),(1,236),(2,236),(20,218),(21,218),(22,218),(40,237),(41,237),(42,237)],
-                            [(0,238),(1,238),(2,238),(20,218),(21,218),(22,218),(40,239),(41,239),(42,239)],
-                            [(0,0),(1,0),(2,0),(20,218),(21,218),(22,218),(40,0),(41,0),(42,0)],
-                            [(0,0),(1,0),(2,0),(20,219),(21,219),(22,219),(40,0),(41,0),(42,0)],
-                            [(0,0),(1,0),(2,0),(20,0),(21,0),(22,0),(40,0),(41,0),(42,0)],
-                        ]
-                        if disappear < 17:
-                            # Draw captive sprite until frame 12
-                            if disappear < 12:
-                                sp = self.sprites[obj["params"][2]]
-                                surface.blit(sp["surf"], (cx + sp["x_off"], cy + sp["y_off"]))
-                            # Draw disappear tiles
-                            for toff, ti in CAGE_DISAPPEAR[disappear]:
-                                dc, dr = toff % 20, toff // 20
-                                fg_idx = (row + dr) * MAP_COLS + (col + dc)
-                                obj.setdefault("fg_tiles", {})[fg_idx] = ti if ti else 0
-                        elif not obj.get("done"):
-                            # Animation complete — clear collision walls, decrement captive count (once)
-                            obj["done"] = True
-                            cbm = self.get_collision_bitmap(room_idx)[0]
-                            hx, hy = obj["x"] // 2, obj["y"] // 2
-                            for r in range(18):
-                                for c in [1, 2, 21, 22]:
-                                    bx, by = hx + c, hy + r
-                                    if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                                        cbm[by * HALF_W + bx] = 0
-                            self.captive_count = max(0, self.captive_count - 1)
-                        sp = None
-                    else:
-                        # Active cage: draw captive + force field, check collision
-                        # DRAW_COLLISION shape 13 every update (0x142F): keeps the walls present
-                        # even after another object's restore-from-backup passed over them.
-                        cbm = self.get_collision_bitmap(room_idx)[0]
-                        chx, chy = obj["x"] // 2, obj["y"] // 2
-                        for r in range(18):
-                            for c in (1, 2, 21, 22):
-                                bx, by = chx + c, chy + r
-                                if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                                    cbm[by * HALF_W + bx] = 1
-                        sp = self.sprites[obj["params"][2]]
-                        surface.blit(sp["surf"], (cx + sp["x_off"], cy + sp["y_off"]))
-                        # Force field tiles (4 frames from DS:0x3AF5)
-                        ff_tiles = [232, 233, 252, 253]
-                        frame = (obj["timer"] // 4) % 4
-                        ti = ff_tiles[frame]
-                        for dr in range(3):
-                            for dc in range(3):
-                                fg_idx = (row + dr) * MAP_COLS + (col + dc)
-                                obj.setdefault("fg_tiles", {})[fg_idx] = ti
-                        # Check if Joe touches the force field (collision shape overlap)
-                        jhx, jhy = self.player.x // 2, self.player.y // 2
-                        shx, shy = x // 2, y // 2
-                        touching = False
-                        for dy, dx_start, count in JOE_COL_SHAPE:
-                            jy = jhy + dy
-                            if jy < shy or jy > shy + 17:
-                                continue
-                            for i in range(count):
-                                jx = jhx + dx_start + i
-                                if shx <= jx <= shx + 23:
-                                    touching = True
-                                    break
-                            if touching:
-                                break
-                        if touching:
-                            obj["disappear"] = 0  # start disappear animation
-                            play_sound(SND_THANKS)        # 0x1468
-                            play_sound(SND_TRANSPORTER)   # 0x1F62
-                        sp = None
-            elif ot == 5:  # door — slides up/down based on switch state
-                DOOR_FRAMES = [
-                    [(0,144),(20,164),(40,164),(60,184)],
-                    [(0,145),(20,165),(40,165),(60,185)],
-                    [(0,146),(20,166),(40,166),(60,186)],
-                    [(0,147),(20,167),(40,167),(60,187)],
-                    [(0,144),(20,164),(40,149),(60,187)],
-                    [(0,145),(20,165),(40,169),(60,187)],
-                    [(0,146),(20,166),(40,189),(60,187)],
-                    [(0,147),(20,167),(40,0),(60,187)],
-                    [(0,144),(20,149),(40,0),(60,187)],
-                    [(0,145),(20,169),(40,0),(60,187)],
-                    [(0,146),(20,189),(40,0),(60,187)],
-                    [(0,147),(20,0),(40,0),(60,187)],
-                    [(0,148),(20,0),(40,0),(60,187)],
-                    [(0,168),(20,0),(40,0),(60,187)],
-                    [(0,188),(20,0),(40,0),(60,187)],
-                ]
-                switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
-                var_id = obj["params"][2] if len(obj["params"]) > 2 else 0
-                old_state = min(14, self.switch_state[var_id])
-                # DRAW_VISUAL: erase old collision (restore from backup)
-                cbm = self.get_collision_bitmap(room_idx)[0]
-                backup = self.cbm_backup.get(room_idx)
-                hx = (x + 2) // 2
-                old_shift = (old_state * 3) // 2
-                if backup:
-                    for r in range(0, 21, 2):
-                        by = (y + 4) // 2 - old_shift + r
-                        for c in range(6):
                             bx = hx + c
                             if 0 <= bx < HALF_W and 0 <= by < HALF_H:
                                 cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
-                # Update state
-                if self.switch_state[switch_id]:
-                    if old_state < 14:
-                        old_state += 1
-                else:
-                    if old_state > 0:
-                        old_state -= 1
-                self.switch_state[var_id] = old_state
-                state = old_state
-                # DRAW_COLLISION: write new collision (type 1)
-                new_shift = (state * 3) // 2
-                for r in range(0, 21, 2):
-                    by = (y + 4) // 2 - new_shift + r
-                    for c in range(6):
-                        bx = hx + c
+            if self.switch_state[sw] == 0:
+                if obj["field_active"]:
+                    restore_field()
+                    obj["field_active"] = False
+                    obj["fg_tiles"] = {}
+                return
+            restore_field()
+            obj["frame"] = (obj["frame"] + 1) & 3
+            obj["fg_tiles"] = {tile + i: ti for i, ti in enumerate(self.HFIELD_TILES[obj["frame"]])
+                               if tile + i < MAP_ROWS * MAP_COLS}
+            for r in (2, 3):                                        # shape 11: 48w x 2h
+                by = hy + r
+                for c in range(48):
+                    bx = hx + c
+                    if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                        cbm[by * HALF_W + bx] = CT_WALL
+            obj["field_active"] = True
+        elif t == 13:                                               # 0x134D → 0x1E3C glow ball
+            sw = obj["params"][1] if len(obj["params"]) > 1 else 0
+            if self.switch_state[sw] == 0:
+                if obj["field_active"]:
+                    obj["field_active"] = False
+                    cb_restore(cbm, backup, 5, hx, hy)
+                    obj["fg_tiles"] = self._glow_tiles(tile, 4)     # frame 4: dormant look
+                return
+            cb_restore(cbm, backup, 6, hx, hy)                      # DRAW_VISUAL ring
+            obj["frame"] = (obj["frame"] + 1) & 3
+            obj["fg_tiles"] = self._glow_tiles(tile, obj["frame"])
+            cb_write(cbm, 5, hx, hy, CT_WALL)                       # DRAW_COLLISION
+            obj["field_active"] = True
+        elif t == 10:                                               # 0x1364 cage
+            if obj.get("disappear", -1) >= 0:                       # 0x141B: variable cleared
+                for r in range(18):
+                    for c in (1, 2, 21, 22):
+                        bx, by = hx + c, hy + r
                         if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                            cbm[by * HALF_W + bx] = 1
-                # Update foreground tiles
-                col = obj["params"][0] % MAP_COLS
-                row = obj["params"][0] // MAP_COLS
-                for toff, ti in DOOR_FRAMES[state]:
-                    dc, dr = toff % 20, toff // 20
-                    fg_idx = (row + dr) * MAP_COLS + (col + dc)
-                    obj.setdefault("fg_tiles", {})[fg_idx] = ti
-                continue
-            elif ot == 19:  # teleporter — handled in update_objects
-                continue
-                continue
-            elif ot == 17:  # toggle_switch — matching GAME.EXE 0x213C
-                sw1 = obj["params"][1] if len(obj["params"]) > 1 else 0
-                sw2 = obj["params"][2] if len(obj["params"]) > 2 else 0
-                # CHECK_COLLISION shape 4 overlap (same as regular switch)
-                jhx, jhy = int(self.player.x) // 2, int(self.player.y) // 2
-                shx, shy = x // 2, y // 2
-                touching = False
-                for dy, dx_start, count in JOE_COL_SHAPE:
-                    jy = jhy + dy
-                    if jy < shy + 2 or jy > shy + 3:
-                        continue
-                    for i in range(count):
-                        jx = jhx + dx_start + i
-                        if shx + 2 <= jx <= shx + 5:
-                            touching = True
-                            break
-                    if touching:
-                        break
-                # Edge-triggered: toggle only on first contact
-                if touching and not obj.get("touching"):
-                    self.switch_state[sw1] = ~self.switch_state[sw1] & 0xFF
-                    if sw2 != sw1:
-                        self.switch_state[sw2] = ~self.switch_state[sw2] & 0xFF
-                obj["touching"] = touching
-                # Visual: tile 556 + (sw2 & 1) + 2*(sw1 & 1), written to background
-                ti = 556 + (self.switch_state[sw2] & 1) + 2 * (self.switch_state[sw1] & 1)
-                loc = obj["params"][0]
-                col_t = loc % MAP_COLS
-                row_t = loc // MAP_COLS
-                surface.blit(self.tile_surfs[ti], (col_t * TILE_W, row_t * TILE_H))
-                sp = None
-            elif ot in (15, 16):  # plates — oscillating collision walls (GAME.EXE 0x17A0/0x189B)
-                is_right = (ot == 16)
-                var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
-                tile_loc = obj["params"][0]
-                base_x = x  # BLOCK_TO_XY result stored at init
-                # Position table: 52 entries × 3 words [x_offset, anim_frame, tile_col]
-                PLATE_POS = [
-                    (0,0,0),(2,1,0),(4,2,0),(6,3,0),(8,4,0),(10,5,0),(12,6,0),(14,7,0),(16,8,0),
-                    (18,1,1),(20,2,1),(22,3,1),(24,4,1),(26,5,1),(28,6,1),(30,7,1),(32,8,1),
-                    (34,1,2),(36,2,2),(38,3,2),(40,4,2),(42,5,2),(44,6,2),(46,7,2),(48,8,2),
-                    (50,1,3),(52,2,3),
-                    (50,1,3),(48,0,3),(46,7,2),(44,6,2),(42,5,2),(40,4,2),(38,3,2),(36,9,2),(34,1,2),
-                    (32,0,2),(30,7,1),(28,6,1),(26,5,1),(24,4,1),(22,3,1),(20,9,1),(18,1,1),
-                    (16,0,1),(14,7,0),(12,6,0),(10,5,0),(8,4,0),(6,3,0),(4,9,0),(2,1,0),
-                ]
-                LEFT_FRAMES = [
-                    [(0,72),(20,72),(40,72),(60,72),(80,72)],
-                    [(0,52),(20,51),(40,52),(60,51),(80,52)],
-                    [(0,191),(20,190),(40,191),(60,190),(80,191)],
-                    [(0,171),(20,170),(40,171),(60,170),(80,171),(1,172),(21,172),(41,172),(61,172),(81,172)],
-                    [(0,151),(20,150),(40,151),(60,150),(80,151),(1,152),(21,152),(41,152),(61,152),(81,152)],
-                    [(0,131),(20,130),(40,131),(60,130),(80,131),(1,132),(21,132),(41,132),(61,132),(81,132)],
-                    [(0,111),(20,110),(40,111),(60,110),(80,111),(1,112),(21,112),(41,112),(61,112),(81,112)],
-                    [(0,91),(20,90),(40,91),(60,90),(80,91),(1,92),(21,92),(41,92),(61,92),(81,92)],
-                    [(0,0),(20,71),(40,0),(60,71),(80,0),(1,72),(21,72),(41,72),(61,72),(81,72)],
-                    [(0,191),(20,190),(40,191),(60,190),(80,191),(1,0),(21,0),(41,0),(61,0),(81,0)],
-                ]
-                RIGHT_FRAMES = [
-                    [(0,191),(20,191),(40,191),(60,191),(80,191)],
-                    [(0,52),(20,53),(40,52),(60,53),(80,52)],
-                    [(0,72),(20,73),(40,72),(60,73),(80,72)],
-                    [(0,92),(20,93),(40,92),(60,93),(80,92),(-1,91),(19,91),(39,91),(59,91),(79,91)],
-                    [(0,112),(20,113),(40,112),(60,113),(80,112),(-1,111),(19,111),(39,111),(59,111),(79,111)],
-                    [(0,132),(20,133),(40,132),(60,133),(80,132),(-1,131),(19,131),(39,131),(59,131),(79,131)],
-                    [(0,152),(20,153),(40,152),(60,153),(80,152),(-1,151),(19,151),(39,151),(59,151),(79,151)],
-                    [(0,172),(20,173),(40,172),(60,173),(80,172),(-1,171),(19,171),(39,171),(59,171),(79,171)],
-                    [(0,0),(20,71),(40,0),(60,71),(80,0),(-1,191),(19,191),(39,191),(59,191),(79,191)],
-                    [(0,72),(20,73),(40,72),(60,73),(80,72),(-1,0),(19,0),(39,0),(59,0),(79,0)],
-                ]
-                ANIM_FRAMES = RIGHT_FRAMES if is_right else LEFT_FRAMES
-                obj["timer"] += 1
-                cbm = self.get_collision_bitmap(room_idx)[0]
-                backup = self.cbm_backup.get(room_idx)
-                hy = y // 2
-                cur_hx = obj.get("plate_hx", x // 2)
-                if obj["timer"] % 4 == 0:
-                    # Full update: erase old collision, advance state, write new
-                    old_hx = cur_hx
-                    if backup:
-                        for r in range(0, 30, 2):
-                            by = hy + r
-                            for c in range(6):
-                                bx = old_hx + c
-                                if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                                    cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
-                    val = (self.switch_state[var_id] + 1) & 0xFF
-                    if val >= 52:
-                        val = 0
-                    self.switch_state[var_id] = val
-                    x_off, anim_frame, tile_col = PLATE_POS[val]
-                    col = tile_loc % MAP_COLS
-                    row = tile_loc // MAP_COLS
-                    base_tile = tile_loc + tile_col if not is_right else tile_loc - tile_col
-                    for toff, ti in ANIM_FRAMES[anim_frame]:
-                        fg_idx = base_tile + toff
-                        if 0 <= fg_idx < MAP_COLS * MAP_ROWS:
-                            obj.setdefault("fg_tiles", {})[fg_idx] = ti
-                    # Trail fill: write tile 71 to fg map at rows 1 and 3 below tile_loc
-                    # Left plate fills rightward, right plate fills leftward
-                    fg = obj.setdefault("fg_tiles", {})
-                    for c in range(tile_col):
-                        tc = tile_loc + c if not is_right else tile_loc - c
-                        for row_off in (20, 60):
-                            idx = tc + row_off
-                            if 0 <= idx < MAP_COLS * MAP_ROWS:
-                                fg[idx] = 71
-                    new_cx = base_x + x_off
-                    if is_right:
-                        new_cx = base_x - x_off + 4
-                    cur_hx = new_cx // 2
-                    obj["plate_hx"] = cur_hx
-                # Draw plate tiles via fg_overrides in render_foreground (with colorkey)
-                sp = None
-                continue
-            elif ot == 14:  # sentry — a live Sentry entity is spawned in enter_room()
-                continue
-            elif ot == 18:  # sensor switch — a SensorSwitch entity is spawned in enter_room()
-                continue
-            elif ot == 13:  # glow_ball — GAME.EXE 0x134D via shared field handler 0x1E3C
-                # Not a sprite: a 2x2 foreground tile animation (table DS:0x3BA9) with a hollow
-                # ring collision (shape 5 written, shape 6 erased each update). Frame 4 is the
-                # dormant look drawn once when the switch turns it off.
-                GLOW_FRAMES = ((94, 95, 114, 115), (96, 97, 116, 117), (134, 135, 154, 155),
-                               (136, 137, 156, 157), (138, 139, 158, 159))
-                switch_id = obj["params"][1] if len(obj["params"]) > 1 else 0
-                col = obj["params"][0] % MAP_COLS
-                row = obj["params"][0] // MAP_COLS
-                hx, hy = (col * TILE_W) >> 1, (row * TILE_H) >> 1
-                cbm = self.get_collision_bitmap(room_idx)[0]
-                backup = self.cbm_backup.get(room_idx)
-                if self.switch_state[switch_id] == 0:
-                    if obj.get("field_active"):
-                        obj["field_active"] = False
-                        obj["gb_dormant"] = True
-                        cb_restore(cbm, backup, 5, hx, hy)
-                    frame = 4 if obj.get("gb_dormant") else None
-                else:
-                    frame = (obj["timer"] // 4) % 4
-                    cb_restore(cbm, backup, 6, hx, hy)      # DRAW_VISUAL ring: wipes Joe's marker
-                    cb_write(cbm, 5, hx, hy, CT_WALL)       # DRAW_COLLISION
-                    obj["field_active"] = True
-                if frame is not None:
-                    for i, (dc, dr) in enumerate(((0, 0), (1, 0), (0, 1), (1, 1))):
-                        ti = GLOW_FRAMES[frame][i]
-                        if ti < len(self.tile_surfs):
-                            ts = self.tile_surfs[ti]
-                            ts.set_colorkey((0, 0, 0))
-                            surface.blit(ts, ((col + dc) * TILE_W, (row + dr) * TILE_H))
-                            ts.set_colorkey(None)
-                continue
-            if sp:
-                surface.blit(sp["surf"], (x + sp["x_off"], y + sp["y_off"]))
-        # Beam-out/beam-in animation (BEAM_FRAMES, DS:0x3389)
-        active_beam = self.beam_out or self.beam_in
-        if active_beam is not None:
-            f = active_beam["frame"]
-            if 0 <= f <= 16:
-                tile_loc = active_beam["tile"]
-                col = tile_loc % MAP_COLS
-                row = tile_loc // MAP_COLS
-                for toff, ti in BEAM_FRAMES[f]:
-                    if ti == 0:
-                        continue
-                    dc, dr = toff % 20, toff // 20
-                    px = (col + dc) * TILE_W
-                    py = (row + dr) * TILE_H
-                    ts = self.tile_surfs[ti]
-                    ts.set_colorkey((0, 0, 0))
-                    surface.blit(ts, (px, py))
-            active_beam["timer"] += 1
-            if active_beam["timer"] >= 4:
-                active_beam["timer"] = 0
-                if self.beam_out is not None:
-                    # Beam-out: frames 0→16 (forward), Joe hidden at frame 12
-                    self.beam_out["frame"] += 1
-                    if self.beam_out["frame"] > 16:
-                        bo = self.beam_out
-                        self.beam_out = None
-                        if "dest_room" in bo:
-                            # Teleporter beam-out → teleport Joe → start beam-in
-                            dest_room = bo["dest_room"]
-                            dest_tile = bo["dest_tile"]
-                            dcol = dest_tile % MAP_COLS
-                            drow = dest_tile // MAP_COLS
-                            self.player.x = dcol * TILE_W + 23
-                            self.player.y = drow * TILE_H + 16
-                            self.player.vy = 0
-                            self.player.frac = 0
-                            if dest_room != self.current_room:
-                                self.carry_mobiles()
-                                self.current_room = dest_room
-                                self.player.explosions.clear()
-                            self.cbm_cache.pop(self.current_room, None)
-                            self.cbm_backup.pop(self.current_room, None)
-                            self.last_room = None   # force enter_room(): objects re-init
-                            self.beam_in = {"tile": dest_tile, "frame": 15, "timer": 0}
-                            play_sound(SND_TRANSPORTER)   # 0x2020 (beam-in object init)
-                        else:
-                            self.end_level(won=True)      # level-complete beam-out
-                else:
-                    # Beam-in: frames 15→0 (reverse)
-                    self.beam_in["frame"] -= 1
-                    if self.beam_in["frame"] < 0:
-                        self.beam_in = None
+                            cbm[by * HALF_W + bx] = 0
+                obj["interval"] = None
+                return
+            for r in range(18):                                     # DRAW_COLLISION shape 13
+                for c in (1, 2, 21, 22):
+                    bx, by = hx + c, hy + r
+                    if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                        cbm[by * HALF_W + bx] = CT_WALL
+            if cb_check(cbm, 14, hx, hy, 0)[1][CT_JOE]:             # 0x143D: Joe inside
+                obj["disappear"] = 0                                # beam 0x1F18 starts now
+                obj["beam_next"] = self.tick + self.BEAM_INTERVAL
+                obj["fg_tiles"] = {}
+                play_sound(SND_TRANSPORTER)                         # 0x1F62
+                play_sound(SND_THANKS)                              # 0x1468
+                obj["next_time"] += 0x302                           # 0x146E
+                return
+            obj["frame"] = (obj["frame"] + 1) & 3
+            ti = self.CAGE_FF_TILES[obj["frame"]]
+            obj["fg_tiles"] = {(row + dr) * MAP_COLS + col + dc: ti for dr in range(3) for dc in range(3)}
+        elif t == 5:                                                # 0x1C51 door
+            sw = obj["params"][1] if len(obj["params"]) > 1 else 0
+            var = obj["params"][2] if len(obj["params"]) > 2 else 0
+            state = min(14, self.switch_state[var])
+            dhx = (x + 2) // 2
+            if backup:                                              # DRAW_VISUAL shape 3 at the old height
+                for r in range(0, 21, 2):
+                    by = (y + 4) // 2 - (state * 3) // 2 + r
+                    for c in range(6):
+                        bx = dhx + c
+                        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                            cbm[by * HALF_W + bx] = backup[by * HALF_W + bx]
+            if self.switch_state[sw]:
+                state = min(14, state + 1)
+            else:
+                state = max(0, state - 1)
+            self.switch_state[var] = state
+            for r in range(0, 21, 2):                               # DRAW_COLLISION at the new height
+                by = (y + 4) // 2 - (state * 3) // 2 + r
+                for c in range(6):
+                    bx = dhx + c
+                    if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                        cbm[by * HALF_W + bx] = CT_WALL
+            obj["fg_tiles"] = {(row + toff // 20) * MAP_COLS + col + toff % 20: ti
+                               for toff, ti in self.DOOR_FRAMES[state]}
+        elif t in (15, 16):                                         # 0x17A0 / 0x189B plates
+            is_right = t == 16
+            var = obj["params"][1] if len(obj["params"]) > 1 else 0
+            cur_hx = obj["plate_hx"]
+            obj["counter"] = (obj["counter"] + 1) & 0xFF
+            def write_plate(phx, val):                              # shape 18: 6w, 15 rows every 2
+                for r in range(0, 30, 2):
+                    by = hy + r
+                    for c in range(6):
+                        bx = phx + c
+                        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
+                            cbm[by * HALF_W + bx] = val
+            if obj["counter"] & 3:
+                write_plate(cur_hx, CT_WALL)                        # 0x181A: keep it present
+                return
+            write_plate(cur_hx, 0)                                  # 0x182A: erase at the old spot
+            val = (self.switch_state[var] + 1) & 0xFF
+            if val >= 52:
+                val = 0
+            self.switch_state[var] = val
+            x_off, anim_frame, tile_col = self.PLATE_POS[val]
+            base_tile = tile + tile_col if not is_right else tile - tile_col
+            fg = {}
+            for toff, ti in (self.PLATE_RIGHT if is_right else self.PLATE_LEFT)[anim_frame]:
+                idx = base_tile + toff
+                if 0 <= idx < MAP_COLS * MAP_ROWS:
+                    fg[idx] = ti
+            for c in range(tile_col):                               # 0x1872: trail tile 71, rows +1/+3
+                tc = tile + c if not is_right else tile - c
+                for row_off in (20, 60):
+                    if 0 <= tc + row_off < MAP_COLS * MAP_ROWS:
+                        fg[tc + row_off] = 71
+            obj["fg_tiles"] = fg
+            new_cx = x + x_off if not is_right else x - x_off + 4
+            obj["plate_hx"] = new_cx // 2
+            write_plate(obj["plate_hx"], CT_WALL)
+
+    def _glow_tiles(self, tile, frame):
+        return {tile + dc + dr * MAP_COLS: self.GLOW_FRAMES[frame][i]
+                for i, (dc, dr) in enumerate(((0, 0), (1, 0), (0, 1), (1, 1)))}
+
+    def update_beams(self):
+        """Transporter beams: beam-in 0x1FBF (frames 15 -> 0 then blank, Joe appears at 12),
+        beam-out 0x1F18 (frames 0 -> 16, Joe vanishes at 12, done on the 18th update).
+        One frame per 0x46 ticks; the beam-in waits 0x1F4 ticks before its first frame."""
+        bi = self.beam_in
+        while bi is not None and bi["next"] <= self.tick:
+            bi["next"] += self.BEAM_INTERVAL
+            bi["frame"] -= 1
+            if bi["frame"] < 0:
+                self.beam_in = bi = None
+        bo = self.beam_out
+        while bo is not None and bo["next"] <= self.tick:
+            bo["next"] += self.BEAM_INTERVAL
+            bo["frame"] += 1
+            if bo["frame"] > 16:                                    # 0x1F87: 18th update
+                self.beam_out = None
+                self.finish_beam_out(bo)
+                bo = None
+
+    def finish_beam_out(self, bo):
+        if bo is None:
+            return
+        if "dest_room" in bo:                                       # teleporter: Joe moves, beams in
+            dest_room, dest_tile = bo["dest_room"], bo["dest_tile"]
+            self.player.x = (dest_tile % MAP_COLS) * TILE_W + 23
+            self.player.y = (dest_tile // MAP_COLS) * TILE_H + 16
+            self.player.vy = self.player.frac = 0
+            if dest_room != self.current_room:
+                self.carry_mobiles()
+                self.current_room = dest_room
+                self.player.explosions.clear()
+            self.cbm_cache.pop(self.current_room, None)
+            self.cbm_backup.pop(self.current_room, None)
+            self.last_room = None                                   # objects re-init
+            self.start_beam_in(dest_tile)                           # 0x2020
+        else:
+            self.end_level(won=True)                                # level-complete beam-out
+
+    def start_beam_in(self, tile):
+        # frame 16 = not started yet; the first update (after the delay) shows frame 15
+        self.beam_in = {"tile": tile, "frame": 16, "next": self.tick + self.BEAM_IN_DELAY}
+        self.player.next_time = self.tick + self.BEAM_IN_DELAY + self.JOE_AFTER_BEAM   # 0x2006
+        play_sound(SND_TRANSPORTER)                                 # 0x2020 / 0x0AFC
+
+    def beam_fg_tiles(self):
+        """Foreground tiles the active beam has written (0x4B4 through table DS:0x3389)."""
+        beam = self.beam_out or self.beam_in
+        if beam is None:
+            return {}
+        f = beam["frame"]
+        if not 0 <= f <= 16 or (beam is self.beam_in and f == 16):
+            return {}
+        col, row = beam["tile"] % MAP_COLS, beam["tile"] // MAP_COLS
+        return {(row + toff // 20) * MAP_COLS + col + toff % 20: ti for toff, ti in BEAM_FRAMES[f]}
+
+    def draw_objects(self, surface, room_idx):
+        """Background-layer parts of the room objects: fans of types 3-4 and the toggle pad's
+        tile (0x4D2 / a direct map write), and the captive sprite in a cage."""
+        if room_idx not in self.room_objects:
+            return
+        fg = self.levels[self.current_level]["map"][room_idx * ROOM_BYTES + 640:room_idx * ROOM_BYTES + 960]
+        for obj in self.room_objects[room_idx]:
+            for idx, ti in obj.get("bg_tiles", {}).items():
+                if obj["type"] in (3, 4) and fg[idx] == 255:        # 0x4EA: opaque foreground wins
+                    continue
+                surface.blit(self.tile_surfs[ti], ((idx % MAP_COLS) * TILE_W, (idx // MAP_COLS) * TILE_H))
+            if obj["type"] == 10 and obj.get("disappear", -1) < 12 and len(obj["params"]) >= 3 \
+                    and obj["params"][2] < len(self.sprites):
+                sp = self.sprites[obj["params"][2]]                 # freed at beam frame 12 (0x1FA7)
+                surface.blit(sp["surf"], (obj["x"] + 23 + sp["x_off"], obj["y"] + 10 + sp["y_off"]))
 
     def start_teleport(self, obj):
-        """0x22C5: begin the beam-out at the teleporter; beam_out's completion moves Joe to
+        """0x22C5: begin the beam-out at the teleporter; its completion moves Joe to
         dest_room/dest_tile and starts the beam-in there."""
         dest_room = obj["params"][1] if len(obj["params"]) > 1 else 0
         dest_tile = obj["params"][2] if len(obj["params"]) > 2 else 0
         play_sound(SND_TRANSPORTER)                       # 0x1F62 (beam-out object init)
-        self.beam_out = {"tile": obj["params"][0], "frame": 0, "timer": 0,
+        self.beam_out = {"tile": obj["params"][0], "frame": 0, "next": self.tick,
                          "dest_room": dest_room, "dest_tile": dest_tile,
                          "src_room": self.current_room}
-
-    def update_objects(self):
-        """Update objects that affect gameplay (teleporters). Called during update phase."""
-        room_idx = self.current_room
-        if room_idx not in self.room_objects:
-            return
-        px, py = int(self.player.x), int(self.player.y)
-        for obj in self.room_objects[room_idx]:
-            if obj["type"] == 19:  # teleporter — a Teleporter entity (update_entities) fires it
-                continue
-            elif obj["type"] in (15, 16):  # plates — write collision before player update
-                is_right = (obj["type"] == 16)
-                var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
-                base_x = obj["x"]
-                PLATE_POS = [
-                    (0,0,0),(2,1,0),(4,2,0),(6,3,0),(8,4,0),(10,5,0),(12,6,0),(14,7,0),(16,8,0),
-                    (18,1,1),(20,2,1),(22,3,1),(24,4,1),(26,5,1),(28,6,1),(30,7,1),(32,8,1),
-                    (34,1,2),(36,2,2),(38,3,2),(40,4,2),(42,5,2),(44,6,2),(46,7,2),(48,8,2),
-                    (50,1,3),(52,2,3),
-                    (50,1,3),(48,0,3),(46,7,2),(44,6,2),(42,5,2),(40,4,2),(38,3,2),(36,9,2),(34,1,2),
-                    (32,0,2),(30,7,1),(28,6,1),(26,5,1),(24,4,1),(22,3,1),(20,9,1),(18,1,1),
-                    (16,0,1),(14,7,0),(12,6,0),(10,5,0),(8,4,0),(6,3,0),(4,9,0),(2,1,0),
-                ]
-                val = self.switch_state[var_id]
-                if val < 52:
-                    x_off = PLATE_POS[val][0]
-                else:
-                    x_off = 0
-                new_cx = base_x + x_off if not is_right else base_x - x_off + 4
-                cur_hx = new_cx // 2
-                hy = obj["y"] // 2
-                cbm = self.get_collision_bitmap(room_idx)[0]
-                for r in range(0, 30, 2):
-                    by = hy + r
-                    for c in range(6):
-                        bx = cur_hx + c
-                        if 0 <= bx < HALF_W and 0 <= by < HALF_H:
-                            cbm[by * HALF_W + bx] = 1
 
     # ------------------------------------------------------------------
     # Room entry, enemy scheduling, Joe's collision marker and death
@@ -2280,6 +2080,7 @@ class JetPackJoe:
         self.dormant = []
         self.current_room = room
         self.beam_in = self.beam_out = None
+        self.player.next_time = self.tick            # no beam-in wait when debugging
         self.death = None
         self.entities = [e for e in self.entities if not isinstance(e, Shot)]
         self.player.explosions.clear()
@@ -2316,6 +2117,7 @@ class JetPackJoe:
         for obj in self.room_objects.get(room, []):
             t = obj["type"]
             tile = obj["params"][0]
+            self.init_room_object(obj)
             if t == 10 and obj.get("disappear", -1) < 0:
                 play_sound(SND_HELP)                      # 0x1406: captive init
             if t in (11, 12, 14, 20) and not self.enemies_enabled:
@@ -2451,20 +2253,19 @@ class JetPackJoe:
         self.cutscene_then = then
 
     def spawn_timeout_beam(self):
-        """0x0A5E: up to five random tiles (column <= 17) whose 3x3 block has no collision
-        and whose centre is clear of everything (shape 16) get a TimeoutBeam."""
+        """0x0A5E: up to five random tiles (column <= 17) whose 3x3 block has no foreground
+        tiles and whose centre is clear of everything (shape 16) get a TimeoutBeam."""
         room = self.current_room
         map_data = self.levels[self.current_level]["map"]
-        words = struct.unpack_from('<320H', map_data, room * ROOM_BYTES)
+        fg = map_data[room * ROOM_BYTES + 640:room * ROOM_BYTES + 960]
         cbm = self.get_collision_bitmap(room)[0]
         for _ in range(5):
             tile = random.randrange(0x118)
             col, row = tile % MAP_COLS, tile // MAP_COLS
             if col > 0x11:
                 continue
-            if any((words[(row + dr) * MAP_COLS + col + dc] >> 10) & 0x3F
-                   for dr in range(3) for dc in range(3)):
-                continue
+            if any(fg[(row + dr) * MAP_COLS + col + dc] for dr in range(3) for dc in range(3)):
+                continue                                  # [0x5D7 + 2*tile]: foreground map words
             x, y = col * TILE_W + 0x17, row * TILE_H + 0x11
             if cb_check(cbm, 0x10, x >> 1, y >> 1, 0)[0] != 0:
                 continue
@@ -2495,10 +2296,8 @@ class JetPackJoe:
             self.player.next_time = self.tick
             self.player.time = self.level_timer           # 0x063C: shown once 0x09DE first runs
             self.time_counter = 0
-            # Start beam-in animation (matching GAME.EXE 0x0C5B-0x0C78)
-            self.beam_in = {"tile": self.beam_tile, "frame": 15, "timer": 0}
-            play_sound(SND_TRANSPORTER)          # 0x0AFC
             self.beam_out = None
+            self.start_beam_in(self.beam_tile)   # 0x0C5B-0x0C78 / 0x1FBF
             self.level_complete_timer = 0
             self.fade = {"t0": self.tick, "dir": 1, "then": None}   # 0x075E: palette fade-in
             self.cbm_cache = {}
@@ -2576,7 +2375,9 @@ class JetPackJoe:
                 self.frame_no += 1
                 if self.current_room != self.last_room:
                     self.enter_room()
-                beaming = self.beam_out is not None or self.beam_in is not None
+                # Joe is frozen by the beam-out, and until 0x410 ticks after the beam-in's
+                # first frame (0x2006), which is where its frame has reached 1.
+                beaming = self.beam_out is not None or (self.beam_in is not None and self.beam_in["frame"] > 1)
                 dying = self.death is not None
                 keys = pygame.key.get_pressed()
                 inp = 0
@@ -2592,7 +2393,7 @@ class JetPackJoe:
                 if dying:
                     self.update_death()
                 elif not beaming:
-                    self.update_objects()
+                    self.update_room_objects()
                     # Joe runs every 10 ticks (0x06BB), ~1.94 times per 60 Hz frame
                     while self.player.next_time <= self.tick and self.death is None:
                         self.player.step(self, inp)
@@ -2601,7 +2402,7 @@ class JetPackJoe:
                         self.player.next_time = self.tick + JOE_INTERVAL
                     self.player.update_explosions()
                 else:
-                    self.update_objects()
+                    self.update_room_objects()
                     self.player.next_time = self.tick + JOE_INTERVAL
                 if self.current_room != self.last_room:
                     self.enter_room()
@@ -2610,7 +2411,7 @@ class JetPackJoe:
                 if self.captive_count <= 0 and self.beam_out is None and self.level_complete_timer == 0:
                     # Convert Joe's position to tile for beam-out (matching GAME.EXE 0x0C27)
                     tile = (int(self.player.y) // TILE_H) * MAP_COLS + (int(self.player.x) // TILE_W)
-                    self.beam_out = {"tile": tile, "frame": 0, "timer": 0}
+                    self.beam_out = {"tile": tile, "frame": 0, "next": self.tick}
                     play_sound(SND_TRANSPORTER)       # 0x1F62 via 0x0C27
                     self.level_complete_timer = 1  # flag: beam-out started
                 self.time_counter += 1
@@ -2637,7 +2438,7 @@ class JetPackJoe:
             joe_hidden = False
             if self.beam_out and self.beam_out["frame"] >= 12:
                 joe_hidden = True
-            if self.beam_in:
+            if self.beam_in and self.beam_in["frame"] > 12:
                 joe_hidden = True
             if self.death is not None and self.death["hidden"]:
                 joe_hidden = True

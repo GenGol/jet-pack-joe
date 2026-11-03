@@ -7,14 +7,46 @@ from harness import Driver, J     # noqa: E402
 
 
 def rescue(d, room):
+    """The cage checks shape 14, the two columns just outside its walls (0x143D), so Joe
+    frees the captive by pressing against the cage from outside, not by standing in it."""
     g = d.g
     cage = next(o for o in g.room_objects[room] if o["type"] == 10)
-    d.place(cage["x"] + 23, cage["y"] + 40)
-    d.run(60, until=lambda g: cage.get("disappear", -1) >= 0)
-    assert cage.get("disappear", -1) >= 0, "Joe did not rescue the captive"
-    d.run(120, until=lambda g: cage.get("done"))
-    assert cage.get("done")
+    assert touch_cage(d, cage), "Joe did not rescue the captive"
+    assert cage.get("disappear", -1) >= 17, "the beam did not finish"
     return cage
+
+
+def touch_cage(d, cage, wait=True):
+    """Hover beside the cage at wall height and push into its side wall from whichever side
+    has room (Joe's body is 28 px wide: left of the cage his centre must be <= x-14, right
+    of it >= x+58). With `wait`, keep hovering there until the beam has finished."""
+    g = d.g
+    room = g.current_room
+    for offsets, key in (((-18, -26, -34), "right"), ((60, 68, 76), "left")):
+        spot = None
+        for off in offsets:
+            try:
+                spot = d.place(cage["x"] + off, cage["y"] + 18, radius=6)
+                break
+            except RuntimeError:
+                continue
+        if spot is None:
+            continue
+        jx, jy = spot
+        for _ in range(120):
+            if cage.get("disappear", -1) >= 0 or g.death is not None or g.current_room != room:
+                break
+            d.run(1, keys={key, "thrust"} if g.player.y > jy else {key})
+        if cage.get("disappear", -1) >= 0:
+            if wait:
+                for _ in range(200):
+                    if cage.get("disappear", -1) >= 17 or g.death is not None or g.current_room != room:
+                        break
+                    d.run(1, keys={"thrust"} if g.player.y > jy else set())
+            return True
+        if g.death is not None or g.current_room != room:
+            return False
+    return False
 
 
 def test_backup_bitmap_has_no_cage_walls():
@@ -55,7 +87,7 @@ def test_cage_walls_survive_a_restore_while_active():
     cbm = g.get_collision_bitmap(13)[0]
     hx, hy = cage["x"] // 2, cage["y"] // 2
     J.cb_restore(cbm, g.cbm_backup[13], 13, hx, hy)        # something erased over the cage
-    d.run(1)
+    d.run(8)                                                # the cage updates every 0x7D ticks
     assert cbm[(hy + 5) * J.HALF_W + hx + 1] == 1, "active cage should rewrite its walls"
 
 
@@ -102,16 +134,14 @@ def test_every_cage_in_the_game_opens_and_stays_open_after_reload():
             g.set_level(lvl)
             g.enemies_enabled = False
             cage = g.room_objects[room][idx]
-            g.jump_to_room(room)
-            d.run(2)
+            g.jump_to_room(room)                     # no frames yet: a plate may sit over the drop spot
             g.player.time = 9999
-            jx, jy = d.place(cage["x"] + 23, cage["y"] + 40, radius=60)
-            # Hover at the placed height (some cages hang over pits) until the rescue finishes.
-            for _ in range(240):
-                d.run(1, keys={"thrust"} if g.player.y > jy else set())
-                if cage.get("done") or g.current_room != room:
-                    break
-            if not cage.get("done"):
+            # Press against a cage wall from outside (hovering, some cages hang over pits),
+            # then wait for the beam to finish.
+            if not touch_cage(d, cage):
+                failures.append((lvl + 1, room, "could not touch the cage"))
+                continue
+            if cage.get("disappear", -1) < 17:
                 failures.append((lvl + 1, room, "rescue did not complete"))
                 continue
             g.cbm_cache.pop(room, None)
