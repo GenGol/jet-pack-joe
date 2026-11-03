@@ -13,7 +13,7 @@ import pygame                     # noqa: E402
 LEVEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "TESTLEVEL.JPL")
 ROOM = 7
 FLOOR_Y = 164                     # Joe standing on the floor of a test-level room
-TURRET_X, TURRET_Y = 10 * 16 + 8, 14 * 12 + 6
+TURRET_X, TURRET_Y = 10 * 16 + 8, 13 * 12 + 12          # centre of the two-tile body
 
 
 def armoury(enhanced=True, enemies=True):
@@ -39,7 +39,8 @@ def test_room_has_two_packs_and_a_turret():
     assert [p.kind for p in packs] == [J.PACK_TWIN, J.PACK_SHIELD]
     t = d.entities(J.Turret)
     assert len(t) == 1 and (t[0].x, t[0].y) == (TURRET_X, TURRET_Y) and t[0].hp == J.TURRET_HP
-    assert J.cb_check(g.cbm, 2, t[0].x >> 1, t[0].y >> 1, 0)[1][J.CT_ENEMY] > 0, "turret writes type 6"
+    total, hist = t[0].check(g.cbm, 0)
+    assert total == 8 * 12 and hist[J.CT_ENEMY] == total, "a solid 16x24 block of type 6"
 
 
 def test_classic_flag_ignores_packs_and_turrets():
@@ -73,12 +74,12 @@ def test_twin_shot_fires_two_shots_per_press():
     g.player.pack = J.PACK_TWIN
     d.run(1, keys={"fire"})
     shots = d.entities(J.Shot)
-    assert len(shots) == 2 and len({s.y for s in shots}) == 1, "two shots on the same row"
+    assert len(shots) == 2 and len({s.y for s in shots}) == 1, "two shots on the same path"
     assert abs(shots[0].x - shots[1].x) == 8
 
 
 def test_twin_shot_lands_two_hits_on_the_turret():
-    """Both shots of a volley hit the turret: two presses destroy it (3 hp)."""
+    """Both shots of a volley hit the turret and count separately: two presses destroy it."""
     d, g = armoury()
     d.place(TURRET_X + 70, FLOOR_Y)
     g.player.direction = 0
@@ -86,6 +87,7 @@ def test_twin_shot_lands_two_hits_on_the_turret():
     turret = d.entities(J.Turret)[0]
     d.run(1, keys={"fire"})
     d.run(60, until=lambda g: not d.entities(J.Shot))
+    d.run(4)                                             # the turret notices a hit at its next update
     assert turret.hp == J.TURRET_HP - 2, f"one volley should take two hit points, hp={turret.hp}"
 
 
@@ -134,7 +136,7 @@ def test_three_hits_destroy_the_turret():
     d.run(150, keys={"fire"}, until=lambda g: not turret.alive or g.death is not None)
     assert g.death is None, f"Joe died with the turret at {turret.hp} hp"
     assert not turret.alive and d.entities(J.EnemyExplosion), "turret should explode after 3 hits"
-    assert J.cb_check(g.cbm, 2, turret.x >> 1, turret.y >> 1, 0)[0] == 0, "its collision is erased"
+    assert turret.check(g.cbm, 0)[0] == 0, "its collision is erased"
 
 
 def test_status_bar_shows_the_pack():

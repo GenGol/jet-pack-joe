@@ -936,16 +936,20 @@ class SoundBank:
         self.sounds = []
         self.history = []                      # ids played, newest last (for tests/debugging)
         self._ends = [0.0] * self.CHANNELS
+        self.reason = "off by request (driver 0/1 or JPJ_SOUND=0)"
         if not enabled:
             return
         try:
             pygame.mixer.quit()
             pygame.mixer.init(frequency=22050, size=-16, channels=1, buffer=512)
             info = pygame.mixer.get_init()
-        except pygame.error:
+            self.reason = "mixer did not initialise"
+        except pygame.error as e:
             info = None
+            self.reason = f"mixer error: {e}"
         if not info:
             return
+        self.reason = f"on, {info[0]} Hz via {pygame.mixer.get_init() and os.environ.get('SDL_AUDIODRIVER', 'default driver')}"
         rate, fmt, nch = info
         data = load_raw("DS00.DAT")
         offs = [struct.unpack_from('<H', data, 2 * i)[0] * 16 for i in range(6)]
@@ -1202,9 +1206,9 @@ class Player:
         sx = self.x - 12 + 24 * self.direction
         g.entities.append(Shot(g, sx, self.y + 2, self.direction))  # 0x0EDD
         if self.pack == PACK_TWIN and g.enhanced:        # enhanced: a second shot trails the first
-            # Same row, 8 px behind: it hits whatever the first hits (a turret is only 12 px
-            # tall), and 8 px = 60 ticks later, past the turret's 32-tick update, so it counts
-            # as a separate hit.
+            # Same path, 8 px behind (a stacked pair did not match the gun's muzzle animation):
+            # 8 px = 60 ticks later, past the turret's 32-tick update, so a volley counts as
+            # two hits.
             g.entities.append(Shot(g, sx - 8 * (2 * self.direction - 1), self.y + 2, self.direction))
         play_sound(SND_SHOOT)                            # 0x0EF8
 
@@ -1395,12 +1399,14 @@ class TimeoutBeam(Entity):
 #   22 pack   (tile, kind, var): a pickup Joe wears until he dies or finishes the level. Present
 #             while switch variable `var` is non-zero; taking it clears the variable, so it does
 #             not come back when the room is re-entered. One pack at a time: a new one replaces
-#             the old. kind 1 TWIN SHOT: a second shot trails every shot 8 px behind on the same
-#             row. kind 2 SHIELD: absorbs
+#             the old. kind 1 TWIN SHOT: a second shot follows every shot 8 px behind on the
+#             same path. kind 2 SHIELD: absorbs
 #             one death (any cause, including a crush, which throws Joe to the nearest free spot),
 #             then Joe is invulnerable for SHIELD_INVULN ticks.
-#   23 turret (tile, var, sides): a floor- or wall-mounted gun (collision shape 2, type 6, so
-#             touching it kills). Every 0x20 ticks it looks for Joe within TURRET_RANGE_Y px of
+#   23 turret (tile, var, sides): a floor- or wall-mounted gun two tiles tall (the object tile
+#             is the top one; collision = SH_TURRET, a solid 16x24 rectangle, as type 6, so
+#             touching it kills, and both twin shots land on it). Every 0x20 ticks it looks for
+#             Joe within TURRET_RANGE_Y px of
 #             its row on an allowed side (0 left, 1 right, 2 either) with no wall between them,
 #             and fires a bullet every TURRET_COOLDOWN ticks. Present while `var` is non-zero.
 #             Each shot of Joe's that lands takes one of TURRET_HP hit points; it then explodes
@@ -1413,6 +1419,8 @@ TURRET_HP = 3
 TURRET_COOLDOWN = 1400           # ticks between turret shots (~1.2 s)
 TURRET_RANGE_Y = 14              # px: Joe's centre must be this close to the turret's row
 TURRET_SHOT_INTERVAL = 12        # ticks per 2 px step (~194 px/s; Joe climbs at 116 px/s)
+SH_TURRET = 1000                 # a synthetic collision shape (SH00.DAT has 258): 8x12 half-res
+_SH_CACHE[SH_TURRET] = tuple((row, -4, 8) for row in range(-6, 6))   # = the 16x24 px body
 
 # Pixel art for the new objects: one hex digit per pixel = palette index 0-15 (the EGA colours
 # shared by every level palette), "." = transparent.
@@ -1445,16 +1453,28 @@ ART = {
         "..888888888888",
         "..8.........8.",
     ),
-    "turret": (                  # facing right; flipped for left
+    "turret": (                  # 16x24, facing right; flipped for left. Barrel on rows 11-12.
+        "......7777......",
+        ".....7FFFF7.....",
+        ".....7F88F7.....",
+        "......7777......",
+        "......7887......",
         "....77777777....",
         "...7FFFFFFFF7...",
         "..7F88888888F7..",
-        "..7F8CC88888F888",
-        "..7F8CC88888F7FF",
+        "..7F8CC88888F7..",
+        "..7F8CC88888F7..",
+        "..7F88888888F7..",
+        "..7F88888888F888",
+        "..7F88888888F7FF",
         "..7F88888888F7..",
         "..7FFFFFFFFFF7..",
         "...777777777....",
         "..8888888888....",
+        ".877777777778...",
+        ".877777777778...",
+        ".877777777778...",
+        ".877777777778...",
         ".877777777778...",
         ".877777777778...",
         "88888888888888..",
@@ -1554,11 +1574,12 @@ class TurretShot(Entity):
 
 
 class Turret(Entity):
-    """Object type 23. (x, y) is the centre of its 16x12 body, one tile."""
+    """Object type 23. (x, y) is the centre of its 16x24 body (two tiles; the object tile is the
+    top one). Its collision is SH_TURRET, the same 16x24 rectangle."""
     interval = 0x20
 
     def __init__(self, g, obj):
-        super().__init__(obj["x"] + 8, obj["y"] + 6, g.tick)
+        super().__init__(obj["x"] + 8, obj["y"] + 12, g.tick)
         self.sides = obj["params"][2] if len(obj["params"]) > 2 else 2
         self.facing = 0 if self.sides == 0 else 1
         self.hp = TURRET_HP
@@ -1567,21 +1588,27 @@ class Turret(Entity):
         self.fired_at = -1e9
         self.room = g.current_room
         self.art = g.art
-        cb_write(g.cbm, 2, self.x >> 1, self.y >> 1, CT_ENEMY)
+        self.write(g.cbm)
+
+    def write(self, cbm):
+        cb_write(cbm, SH_TURRET, self.x >> 1, self.y >> 1, CT_ENEMY)
+
+    def check(self, cbm, filt):
+        return cb_check(cbm, SH_TURRET, self.x >> 1, self.y >> 1, filt)
 
     def update(self, g):
         cbm, backup = g.cbm, g.cbm_bak
         hx, hy = self.x >> 1, self.y >> 1
-        total, hist = cb_check(cbm, 2, hx, hy, CT_ENEMY)
+        total, hist = self.check(cbm, CT_ENEMY)
         if total and hist[CT_JOE] != total:          # not just Joe's marker: a shot erased us
             self.hp -= 1
             self.hit_flash = 6
             if self.hp <= 0:
-                cb_restore_if(cbm, backup, 2, hx, hy, CT_ENEMY)
+                cb_restore_if(cbm, backup, SH_TURRET, hx, hy, CT_ENEMY)
                 g.entities.append(EnemyExplosion(g, self.x, self.y, None))
                 self.alive = False
                 return
-        cb_write(cbm, 2, hx, hy, CT_ENEMY)             # Joe overlapping it dies at his next check
+        self.write(cbm)                                # Joe overlapping it dies at his next check
         if g.death is not None or g.beam_in is not None or g.beam_out is not None:
             return
         jx, jy = int(g.player.x), int(g.player.y)
@@ -1611,13 +1638,13 @@ class Turret(Entity):
         name = "turret_hit" if self.hit_flash else "turret"
         if self.facing == 0:
             name += "_l"
-        surface.blit(self.art[name], (self.x - 8, self.y - 6))
+        surface.blit(self.art[name], (self.x - 8, self.y - 12))
         if self.hit_flash:
             self.hit_flash -= 1
         if self.muzzle:
             self.muzzle -= 1
             fx = self.x + 8 if self.facing else self.x - 12
-            surface.blit(self.art["flash"], (fx, self.y - 4))
+            surface.blit(self.art["flash"], (fx, self.y - 2))
 
 
 class JetPackJoe:
@@ -2870,6 +2897,7 @@ def parse_level_arg(argv):
 
 if __name__ == "__main__":
     game = JetPackJoe()
+    print("sound:", game.sound.reason)
     level_path = parse_level_arg(sys.argv)
     if level_path:
         game.levels.append(load_level_file(level_path))      # becomes level 4 (key 4)

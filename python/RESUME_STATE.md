@@ -3263,15 +3263,19 @@ of levels 1-3 contains either, so the faithful port plays exactly as before. `--
   middle of its tile) for Joe's marker. Present while `switch_state[var] != 0`; taking it
   clears the var, so it does not return on re-entry. One pack at a time (`Player.pack`), lost
   with the Player object on death or level change. kind 1 **TWIN SHOT**: `Player.fire` adds a
-  second shot 8 px behind the first on the same row (Cam found the first version, 8 px higher,
-  flew over the 12 px turret; the 8 px gap is 60 ticks, more than the turret's 32-tick update,
-  so a volley counts as two hits). kind 2 **SHIELD**: `JetPackJoe.shield_save`
+  second shot 8 px behind the first on the same path (a stacked pair, 8 px higher, first flew
+  over the one-tile turret and then did not match the gun's muzzle animation, so Cam chose the
+  same-path version; the 8 px gap is 60 ticks, more than the turret's 32-tick update, so a
+  volley counts as two hits, and a test waits for that update before asserting). kind 2 **SHIELD**: `JetPackJoe.shield_save`
   absorbs one death from any cause (`start_death`) and then grants `SHIELD_INVULN` = 1750
   ticks of invulnerability; a crush (`Player._unstick` failing) goes through
   `shield_knockback`, which moves Joe to the nearest clear spot within 40 px or leaves him
   until the overlap clears. Joe flickers while invulnerable; a cyan ring shows the shield.
-- **Type 23 turret** `(tile, var, sides)`: entity `Turret`, one tile, collision shape 2 as type
-  6 (touching it kills), interval 0x20. Present while `var != 0`; `--no-enemies` / E hides it.
+- **Type 23 turret** `(tile, var, sides)`: entity `Turret`, 16x24 px over two tiles (the object
+  tile is the top one), collision `SH_TURRET` = a synthetic 8x12 half-res rectangle injected
+  into `_SH_CACHE` at index 1000 (SH00.DAT has 258 shapes; shape 2 is a bird-shaped diamond,
+  not a block) as type 6 (touching it kills), interval 0x20. Two tiles tall because Cam asked
+  for a taller turret when the stacked twin shot flew over the one-tile version. Present while `var != 0`; `--no-enemies` / E hides it.
   It fires `TurretShot` (2 px per 12 ticks along its row, no collision bytes of its own) when
   Joe is within `TURRET_RANGE_Y` = 14 px of its row, at least 16 px away horizontally, on an
   allowed side (0 left, 1 right, 2 either) and no wall byte lies on the row between them;
@@ -3292,7 +3296,7 @@ of levels 1-3 contains either, so the faithful port plays exactly as before. `--
   words happened to spell (4, 17, now 22). Entries at or past 68 and entries aliasing the
   trailer offset now get an empty list.
 - Test level room 7 (between 4 and 5): twin-shot pack at col 3, turret on the floor at col 10
-  firing both ways (vars 24/25/26, all default ON), shield pack at col 16. Joe either flies
+  (rows 13-14) firing both ways (vars 24/25/26, all default ON), shield pack at col 16. Joe either flies
   over the turret or shoots it three times.
 - Tests: `tests/test_enhanced.py` (10: originals untouched, room contents, classic flag,
   pickup remembered across re-entry, twin shot count, shield absorbs one ball death then
