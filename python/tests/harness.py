@@ -55,9 +55,9 @@ class Driver:
     def goto(self, level, room, skip_beam=True):
         """Switch to a level and room. Joe keeps the level's beam-in position unless placed."""
         self.g.set_level(level)
-        self.g.current_room = room
-        if skip_beam:
-            self.g.beam_in = None
+        self.g.jump_to_room(room)                # also drops Joe on a free spot of that room
+        if not skip_beam:
+            self.g.beam_in = {"tile": self.g.beam_tile, "frame": 15, "timer": 0}
         self.g.player.time = 9999                # don't let the timer end a long test
         self.g.enter_room()
 
@@ -79,7 +79,7 @@ class Driver:
         if best is None:
             raise RuntimeError(f"no free spot near ({x},{y}) in room {g.current_room}")
         g.player.x, g.player.y = float(best[1]), float(best[2])
-        g.player.vx = g.player.vy = 0.0
+        g.player.vy = g.player.frac = 0
         g.joe_marked = None
         return best[1], best[2]
 

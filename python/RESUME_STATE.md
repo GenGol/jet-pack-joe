@@ -2890,9 +2890,7 @@ decrements lives; normal level start and walking unaffected; 600 busy frames in 
 - ~~Sensor switch (type 18)~~ — implemented 2026-11-01 as `SensorSwitch` (see below).
 - Plate crush death: VERIFIED in L2 R18 — Joe hovering between the plates (y 60-119) is crushed;
   standing on the floor below them he is not, which is correct.
-- Exact Joe physics: Joe's update 0x0CCC runs every 10 ticks (main loop 0x06BB, [0x23D2] += 10)
-  with gravity 41, thrust 82, clamp ±1000 — the same constants as the sentry. Python keeps its
-  tuned per-frame physics (GRAVITY 0.15, THRUST -0.35, MAX 3.0 px/frame).
+- ~~Exact Joe physics~~ — ported 2026-11-03 (see "Joe's exact physics" below).
 - Status-bar font and colours, cutscenes (see Session 7 verification).
 
 ### Headless test suite (added 2026-11-01)
@@ -3076,3 +3074,34 @@ Python: `Entity.visible/room/mobile`, `Entity.cross()`, `Ball/Bird/Orb.activate(
 `wake_dormant()` (phase 5 + the sweep, run each frame), `self.dormant`. The old room's cached
 collision bitmap is dropped on exit, like the original's rebuild on entry. Shots still die at
 the edge (not ported). Tests: `tests/test_follow.py`.
+
+
+### Joe's exact physics and shots crossing rooms (2026-11-03)
+
+`Player.step(g, inp)` is 0x0CCC-0x0F04 line for line, run every **10 ticks** from the frame loop
+(`while player.next_time <= tick`), input as the INT 62h DX=1 bit mask (1 thrust, 2 right,
+8 left, 0x10 fire):
+1. 0x0CCC death check + lift marker (`joe_check_and_unmark`); 0x0CFB the nine unstick positions
+   `(x,y) (c1,y) (c3,y) (x,r1) (x,r3) (c1,r3) (c3,r3) (c3,r1) (c1,r1)` with c1=(x-2)|1, c3=c1+3
+   (same for rows) → none free = crush death; position stored (0x0D5E).
+2. vy -= 82 if thrust; x ± 1 if right/left (both cancel); if blocked, try y'=(y-2)|1 then y'+3,
+   else undo the step (0x0D95).
+3. vy += 41, clamp ±1000 (thousandths px/update → at most 1 px per update = 116.5 px/s);
+   frac += vy with carry/borrow into y (0x0DD8).
+4. If blocked at the new y: try x'=(x-2)|1, then x'' = x+2 with y made even, else y = the stored
+   y and vy = 0 (0x0DF5).
+5. ROOM_TRANSITION 0x0521 → `change_room` (0x0802: carry mobiles, rebuild bitmap, land at the
+   wrapped position; no neighbour → clamp). Store, DRAW_COLLISION shape 0 type 14 (`joe_mark`).
+6. Sprites (0x0E43): body = dir + 2·moving + 4·(fired within 0x28 ticks); the second sprite
+   (flame) = 8 + (body & 3) + 4·(counter bit 6) + 4·thrust — **always drawn**, it flickers even
+   when Joe stands still (sprites 8-11/12-15), bigger while thrusting (12-15/16-19).
+7. Fire (0x0EAA): fires on a fresh press, then every 0xC8 ticks while held; shot at
+   (x - 12 + 24·dir, y + 2), sprite 23+dir, speed dir·4-2.
+Verified: walk 117 px/s (116.5), fall capped at 1 px/update, gravity ramp. The Python-only
+"pipe floor/ceiling" barriers and the ±6 px nudges are gone (the original only has the bitmap).
+
+**Shots** are now `Shot(Entity)` with `mobile=True` (slot state 3), updated by the entity
+scheduler at 15 ticks: on crossing an edge (0x1095) they park dormant in the next room and
+resume if Joe follows within ~6 s, exactly like balls; on a room change they are cloned and
+carried like the other mobiles. Explosions only when live and in Joe's room (0x10D2).
+Tests: `tests/test_joe.py`.

@@ -45,18 +45,11 @@ TOTAL_H = SCREEN_H + STATUS_H  # 208
 SCALE = 3
 WIN_W, WIN_H = SCREEN_W * SCALE, TOTAL_H * SCALE
 FPS = 60
-GRAVITY = 0.15
-THRUST = -0.35
-MAX_FALL = 3.0
-MAX_FLY = -3.0
-MOVE_SPEED = 2.0
 SHOT_SPEED = 5
 SHOT_LIFE = 40
 TIME_LIMIT = 999
 
 # Joe sprite indices: 0-7 (even=left, odd=right)
-JOE_FRAMES_L = [0, 2, 4, 6]
-JOE_FRAMES_R = [1, 3, 5, 7]
 
 
 def load_raw(fn):
@@ -322,7 +315,6 @@ def cb_restore_if(cbm, backup, shape, hx, hy, val):
 
 
 # Joe's collision handler (0x0CFB-0x0D5B): 9 positions tried before giving up and dying (crush).
-CRUSH_NUDGES = ((0, 0), (-2, 0), (2, 0), (0, -2), (0, 2), (-2, 2), (2, 2), (2, -2), (-2, -2))
 
 
 def in_room(x, y):
@@ -985,191 +977,188 @@ class Explosion:
             surface.blit(sp["surf"], (self.x + sp["x_off"], self.y + sp["y_off"]))
 
 
-class Shot:
-    """Moving projectile matching original GAME.EXE handler 0xFE3.
-    Moves ±2px every frame. On wall hit: spawn Explosion, die immediately."""
-    def __init__(self, x, y, direction, explosions):
-        self.x, self.y = float(x), float(y)
-        self.direction = direction
-        self.sprite_idx = 23 if direction > 0 else 24
-        self.alive = True
-        self.explosions = explosions  # shared list to append explosions to
+class Shot(Entity):
+    """Handler 0x0FE3 (slot state 3: mobile). Init 0x1005: sprite 23+dir, speed dir*4-2 (±2),
+    interval 15 ticks. Update 0x1084: x += speed; ROOM_TRANSITION (0x521) → crossing an edge
+    parks it dormant in the next room (it keeps flying if Joe follows within ~6 s); then
+    CHECK shape 1 (BL=0): nothing → fly on; no Joe bytes → DRAW_VISUAL shape 1 (this wipes a
+    ball's/bird's bytes so it explodes on its next self-check) + Explosion 0x1103 if live and
+    in Joe's room, die; Joe plus something else → vanish; only Joe → fly on."""
+    interval = 15
+    mobile = True
 
-    INTERVAL = 15   # [DI+8] = 0x0F ticks between moves
+    def __init__(self, g, x, y, direction):
+        super().__init__(x, y, g.tick)
+        self.direction = direction                      # 0 left, 1 right ([0x23CD])
+        self.speed = direction * 4 - 2
+        self.sprite_idx = 23 + direction
+        self.room = g.current_room
 
-    def update(self, cbm, backup=None):
-        """One render frame: step every 15 ticks (GAME.EXE 0x1084)."""
-        if not self.alive:
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        nx = self.x + self.speed
+        if self.cross(g, nx, self.y):                   # 0x1095
             return
-        self.acc = getattr(self, "acc", 0.0) + TICKS_PER_FRAME
-        while self.alive and self.acc >= self.INTERVAL:
-            self.acc -= self.INTERVAL
-            self.x += self.direction * 2
-            if self.x < 0 or self.x >= SCREEN_W:
-                self.alive = False
-                return
-            hx, hy = int(self.x) >> 1, int(self.y) >> 1
-            total, hist = cb_check(cbm, 1, hx, hy, 0)
-            if total == 0:
-                continue
-            if hist[CT_JOE] == 0:
-                # Hit a wall or enemy: restore backup under the 4x2 shape (this is what wounds
-                # a ball/bird — their own bytes get wiped), spawn explosion, die.
-                cb_restore(cbm, backup, 1, hx, hy)
-                self.explosions.append(Explosion(self.x, self.y))
-                self.alive = False
-            elif total != hist[CT_JOE]:
-                self.alive = False          # Joe plus something else: vanish silently
-            # only Joe under the shot: keep flying
+        self.x = nx
+        hx, hy = nx >> 1, self.y >> 1
+        total, hist = cb_check(cbm, 1, hx, hy, 0)
+        if total == 0:
+            return
+        joe = hist[CT_JOE]
+        if joe == 0:
+            cb_restore(cbm, backup, 1, hx, hy)          # 0x10CC DRAW_VISUAL
+            if self.visible == 1 and self.room == g.current_room:
+                g.player.explosions.append(Explosion(nx, self.y))
+            self.alive = False
+        elif total != joe:
+            self.alive = False                          # 0x10F9: Joe + other → vanish
 
-    def draw(self, surface, sprites):
-        if self.alive and self.sprite_idx < len(sprites):
-            sp = sprites[self.sprite_idx]
-            surface.blit(sp["surf"], (int(self.x) + sp["x_off"], int(self.y) + sp["y_off"]))
+
+# Joe's update (0x0CCC), run every JOE_INTERVAL ticks from the main loop (0x06BB).
+JOE_INTERVAL = 10
+JOE_GRAVITY = 41          # thousandths of a pixel per update, added every update (0x0DBF)
+JOE_THRUST = 82           # subtracted while the thrust key is held (0x0D7F)
+JOE_VMAX = 1000           # |vy| clamp (0x0DC2-0x0DD1): at most 1 px per update
+FIRE_REPEAT = 0xC8        # ticks between shots while fire is held (0x0EBF)
+FIRE_POSE = 0x28          # ticks the "firing" body sprite shows after a shot (0x0E78)
+INP_THRUST, INP_RIGHT, INP_LEFT, INP_FIRE = 1, 2, 8, 0x10   # INT 62h DX=1 bits
 
 
 class Player:
+    """Joe. x/y is the centre of collision shape 0 (cols -6..7, rows -7..7 at half res)."""
+
     def __init__(self, x, y):
-        self.x, self.y = float(x), float(y)
-        self.vx, self.vy = 0.0, 0.0
-        self.direction = 1
-        self.thrusting = False
+        self.x, self.y = int(x), int(y)
+        self.vy = 0               # [0x23C5] thousandths of a pixel per update
+        self.frac = 0             # [0x23C7] sub-pixel accumulator
+        self.direction = 1        # [0x23CD] 0 left, 1 right
+        self.last_fire = -10000   # [0x23CF]
+        self.fire_released = True # [0x23D1]
+        self.next_time = 0        # [0x23D2]
+        self.body_sprite = 1
+        self.flame_sprite = 9
         self.time = TIME_LIMIT
         self.lives = 3
-        self.shots = []
         self.explosions = []
-        self.fire_cooldown = 0
-        self.anim_frame = 0
-        self.anim_timer = 0
-        self.thrust_timer = 0
 
-    def _get_sprite(self, sprites):
-        frames = JOE_FRAMES_R if self.direction > 0 else JOE_FRAMES_L
-        return sprites[frames[self.anim_frame]]
+    # -- helpers --
+    @staticmethod
+    def _clear(cbm, x, y):
+        return cb_check(cbm, 0, x >> 1, y >> 1, 0)[0] == 0
 
-    def update(self, cbm, sprites, pipe_floors=(), pipe_ceilings=(), backup=None):
-        sp = self._get_sprite(sprites)
+    def _unstick(self, cbm, x, y):
+        """0x0CFB-0x0D5B: the nine positions tried when something has moved into Joe. The odd
+        arithmetic ((v-2)|1, then +3) is the original's."""
+        c1, c3 = (x - 2) | 1, ((x - 2) | 1) + 3
+        r1, r3 = (y - 2) | 1, ((y - 2) | 1) + 3
+        for px, py in ((x, y), (c1, y), (c3, y), (x, r1), (x, r3), (c1, r3), (c3, r3), (c3, r1), (c1, r1)):
+            if self._clear(cbm, px, py):
+                return px, py
+        return None
 
-        # --- Horizontal movement ---
-        old_x = self.x
-        self.x += self.vx
-        if joe_hits_bg(cbm, self.x, self.y):
-            found = False
-            for dy in (-2, 2, -4, 4, -6, 6):
-                if not joe_hits_bg(cbm, self.x, self.y + dy):
-                    self.y += dy
-                    found = True
-                    break
-            if not found:
-                self.x = old_x
-
-        # --- Vertical movement ---
-        self.vy += GRAVITY
-        if self.thrusting:
-            self.vy += THRUST
-        self.vy = max(MAX_FLY, min(MAX_FALL, self.vy))
-        old_y = self.y
-        self.y += self.vy
-        if joe_hits_bg(cbm, self.x, self.y):
-            # Try nudging horizontally to slide into openings
-            found = False
-            for dx in (-2, 2, -4, 4, -6, 6):
-                if not joe_hits_bg(cbm, self.x + dx, self.y):
-                    self.x += dx
-                    found = True
-                    break
-            if not found:
-                self.y = old_y
+    def step(self, g, inp):
+        """One Joe update (0x0CCC-0x0F04)."""
+        cbm = g.cbm = g.get_collision_bitmap(g.current_room)[0]
+        backup = g.cbm_bak = g.cbm_backup[g.current_room]
+        x, y = int(self.x), int(self.y)
+        # 0x0CCC: with last update's marker still in place, anything under Joe that is neither
+        # his marker nor a wall killed him; then the marker is lifted.
+        g.joe_check_and_unmark(cbm, backup)
+        if g.death is not None:
+            return
+        pos = self._unstick(cbm, x, y)                   # 0x0CFB crush check
+        if pos is None:
+            if os.environ.get("JPJ_DEBUG"):
+                print(f"CRUSHED at ({x},{y}) room {g.current_room}")
+            g.start_death()
+            return
+        x, y = pos
+        self.x, self.y = x, y                            # 0x0D5E
+        y0 = y
+        vy = self.vy
+        if inp & INP_THRUST:
+            vy -= JOE_THRUST
+        nx, ny = x, y
+        if inp & (INP_RIGHT | INP_LEFT):                 # 0x0D82: ±1 px, both keys cancel
+            if inp & INP_RIGHT:
+                nx += 1
+            if inp & INP_LEFT:
+                nx -= 1
+            if not self._clear(cbm, nx, ny):             # 0x0D9C: step up 1 (odd) or down 2
+                ty = (ny - 2) | 1
+                if self._clear(cbm, nx, ty):
+                    ny = ty
+                elif self._clear(cbm, nx, ty + 3):
+                    ny = ty + 3
+                else:
+                    nx, ny = x, y
+        vy += JOE_GRAVITY                                # 0x0DBF
+        vy = max(-JOE_VMAX, min(JOE_VMAX, vy))
+        self.vy = vy
+        f = self.frac + vy                               # 0x0DD8
+        if f < 0:
+            f += 1000
+            ny -= 1
+        if f >= 1000:
+            f -= 1000
+            ny += 1
+        self.frac = f
+        sx = nx
+        if not self._clear(cbm, nx, ny):                 # 0x0DF5: slide left 1 (odd) or right 2
+            tx = (nx - 2) | 1
+            if self._clear(cbm, tx, ny):
+                nx = tx
+            elif self._clear(cbm, sx + 2, ny & ~1):
+                nx, ny = sx + 2, ny & ~1
+            else:
+                nx, ny = sx, y0
                 self.vy = 0
+        ex = g.exit_room(g.current_room, nx, ny)         # 0x0E28
+        if ex is not None:
+            new_room, wx, wy = ex
+            if new_room is None:
+                nx = max(1, min(SCREEN_W - 1, nx))        # no room that way: stay put
+                ny = max(1, min(SCREEN_H - 1, ny))
+            else:
+                g.change_room(new_room, wx, wy)          # 0x0802
+                nx, ny = wx, wy
+        self.x, self.y = nx, ny                          # 0x0E33
+        g.joe_mark()                                     # 0x0E3B DRAW_COLLISION shape 0 type 14
+        # 0x0E43 sprites: body = dir + 2*moving + 4*recently fired; flame = 8 + (body&3)
+        # + 4*(bit 6 of the counter) + 4*thrust, always shown.
+        moving = 0
+        if inp & INP_RIGHT:
+            if not inp & INP_LEFT:
+                self.direction, moving = 1, 2
+        elif inp & INP_LEFT:
+            self.direction, moving = 0, 2
+        body = moving + self.direction
+        if g.tick - self.last_fire <= FIRE_POSE:
+            body += 4
+        self.body_sprite = body
+        self.flame_sprite = 8 + (body & 3) + ((int(g.tick) >> 4) & 4) + (4 if inp & INP_THRUST else 0)
+        # 0x0EAA fire: once per press, then every FIRE_REPEAT ticks while held
+        if not inp & INP_FIRE:
+            self.fire_released = True
+        elif self.fire_released or g.tick - self.last_fire >= FIRE_REPEAT:
+            self.fire(g)
 
+    def fire(self, g):
+        self.last_fire = g.tick
+        self.fire_released = False
+        g.entities.append(Shot(g, self.x - 12 + 24 * self.direction, self.y + 2, self.direction))  # 0x0EDD
+        play_sound(SND_SHOOT)                            # 0x0EF8
 
-        # Pipe floors and ceilings: invisible platforms
-        # When falling, check ceilings first (land ON pipe), then floors (land IN pipe)
-        if self.vy >= 0:
-            feet_y = int(self.y) + 14
-            joe_l = int(self.x) - 16
-            joe_r = int(self.x) + 15
-            landed = False
-            # Ceilings act as floors when falling from above
-            for x1, x2, ceil_y in pipe_ceilings:
-                if joe_r > x1 and joe_l < x2 and old_y + 14 <= ceil_y <= feet_y:
-                    self.y = ceil_y - 14
-                    self.vy = 0
-                    landed = True
-                    break
-            if not landed:
-                # Pipe floors inside pipes
-                for x1, x2, floor_y in pipe_floors:
-                    if joe_r > x1 and joe_l < x2 and int(self.y) <= floor_y <= feet_y:
-                        self.y = floor_y - 14
-                        self.vy = 0
-                        break
-
-        # Pipe ceilings: invisible barriers at top of pipes
-        if self.vy < 0:
-            head_y = int(self.y) - 14
-            joe_l = int(self.x) - 16
-            joe_r = int(self.x) + 15
-            for x1, x2, ceil_y in pipe_ceilings:
-                if joe_r > x1 and joe_l < x2 and head_y <= ceil_y <= int(self.y):
-                    self.y = ceil_y + 14
-                    self.vy = 0
-                    break
-
-        # No screen clamping — room transitions handle edge-of-screen
-
-        # Animation
-        # Animation: frame 0 = static, only cycle when firing
-        if self.fire_cooldown > 0:
-            self.anim_timer += 1
-            if self.anim_timer >= 8:
-                self.anim_timer = 0
-                self.anim_frame = (self.anim_frame + 1) % 4
-        else:
-            self.anim_frame = 0
-            self.anim_timer = 0
-
-        # Thrust flame: grows over time while thrusting or moving
-        if self.thrusting or self.vx != 0:
-            self.thrust_timer = min(self.thrust_timer + 1, 30)
-        else:
-            self.thrust_timer = 0
-
-        if self.fire_cooldown > 0:
-            self.fire_cooldown -= 1
-        for s in self.shots:
-            s.update(cbm, backup)
-        self.shots = [s for s in self.shots if s.alive]
+    def update_explosions(self):
         for e in self.explosions:
             e.update()
         self.explosions[:] = [e for e in self.explosions if e.alive]
 
-    def fire(self):
-        if self.fire_cooldown <= 0:
-            gun_x = self.x + (12 if self.direction > 0 else -12)
-            gun_y = self.y + 2
-            self.shots.append(Shot(gun_x, gun_y, self.direction, self.explosions))
-            self.fire_cooldown = 8
-            play_sound(SND_SHOOT)                # 0x0EF8
-
     def draw(self, surface, sprites):
-        sp = self._get_sprite(sprites)
-        # Draw Joe
-        surface.blit(sp["surf"], (int(self.x) + sp["x_off"], int(self.y) + sp["y_off"]))
-        # Draw thrust flame on top of Joe
-        if self.thrust_timer > 0 and (self.thrusting or self.vx != 0):
-            size = 0 if self.thrust_timer < 10 else (1 if self.thrust_timer < 20 else 2)
-            if self.vx > 0:
-                flame_idx = [11, 15, 19][size]
-            elif self.vx < 0:
-                flame_idx = [10, 14, 18][size]
-            else:
-                flame_idx = [9, 13, 17][size] if self.direction > 0 else [8, 12, 16][size]
-            if flame_idx < len(sprites):
-                fl = sprites[flame_idx]
-                surface.blit(fl["surf"], (int(self.x) + fl["x_off"], int(self.y) + fl["y_off"]))
-        for s in self.shots:
-            s.draw(surface, sprites)
+        for idx in (self.body_sprite, self.flame_sprite):
+            if idx < len(sprites):
+                sp = sprites[idx]
+                surface.blit(sp["surf"], (int(self.x) + sp["x_off"], int(self.y) + sp["y_off"]))
         for e in self.explosions:
             e.draw(surface, sprites)
 
@@ -1951,12 +1940,11 @@ class JetPackJoe:
                             drow = dest_tile // MAP_COLS
                             self.player.x = dcol * TILE_W + 23
                             self.player.y = drow * TILE_H + 16
-                            self.player.vx = 0
                             self.player.vy = 0
+                            self.player.frac = 0
                             if dest_room != self.current_room:
                                 self.carry_mobiles()
                                 self.current_room = dest_room
-                                self.player.shots.clear()
                                 self.player.explosions.clear()
                             self.cbm_cache.pop(self.current_room, None)
                             self.cbm_backup.pop(self.current_room, None)
@@ -2131,7 +2119,7 @@ class JetPackJoe:
         self.current_room = room
         self.beam_in = self.beam_out = None
         self.death = None
-        self.player.shots.clear()
+        self.entities = [e for e in self.entities if not isinstance(e, Shot)]
         self.player.explosions.clear()
         cbm = self.get_collision_bitmap(room)[0]
         px, py = int(self.player.x), int(self.player.y)
@@ -2149,7 +2137,7 @@ class JetPackJoe:
                 break
         if best is not None:
             self.player.x, self.player.y = float(best[1]), float(best[2])
-        self.player.vx = self.player.vy = 0.0
+        self.player.vy = self.player.frac = 0
         self.joe_marked = None
         return True
 
@@ -2238,10 +2226,7 @@ class JetPackJoe:
         if self.death is not None:
             return
         self.death = {"frame": 0, "next": self.tick + 80, "sprite": None, "hidden": False}
-        self.player.thrusting = False
-        self.player.vx = 0
         self.player.vy = 0
-        self.player.thrust_timer = 0
 
     def update_death(self):
         d = self.death
@@ -2280,67 +2265,17 @@ class JetPackJoe:
         self.set_level(self.current_level)
         self.player.lives = lives
 
-    def try_room_transition(self):
-        """Check if player has left the screen and transition rooms.
-        Matches original GAME.EXE room transition logic at 0x0721 exactly."""
-        cx = self.player.x - 160
-        dx = self.player.y - 96
-        if self.current_room >= len(self.room_headers):
-            return
-        hdr = self.room_headers[self.current_room]
-
-        new_room = 0xFF
-        if dx < -96:  # top exit
-            dx += 192
-            new_room = hdr[0]
-            if hdr[0] != hdr[1]:
-                if cx >= 0:
-                    new_room = hdr[1]
-                    cx -= 320
-                cx += 160
-            # if hdr[0]==hdr[1], cx unchanged
-        elif dx >= 96:  # bottom exit
-            dx -= 192
-            new_room = hdr[5]
-            if hdr[4] != hdr[5]:
-                if cx >= 0:
-                    new_room = hdr[4]
-                    cx -= 320
-                cx += 160
-        elif cx < -160:  # left exit
-            cx += 320
-            new_room = hdr[7]
-            if hdr[6] != hdr[7]:
-                if dx >= 0:
-                    new_room = hdr[6]
-                    dx -= 192
-                dx += 96
-        elif cx >= 160:  # right exit
-            cx -= 320
-            new_room = hdr[2]
-            if hdr[2] != hdr[3]:
-                if dx >= 0:
-                    new_room = hdr[3]
-                    dx -= 192
-                dx += 96
-        else:
-            return
-
-        if new_room == 0xFF:
-            self.player.x = max(1, min(SCREEN_W - 1, self.player.x))
-            self.player.y = max(1, min(SCREEN_H - 1, self.player.y))
-            return
-
+    def change_room(self, new_room, x, y):
+        """ROOM CHANGE 0x0802 for Joe's own transition (0x0E30) — Joe lands at (x, y)."""
         if os.environ.get("JPJ_DEBUG"):
-            print(f"TRANSITION: room {self.current_room}→{new_room}  pos ({self.player.x:.0f},{self.player.y:.0f})→({cx+160:.0f},{dx+96:.0f})")
+            print(f"TRANSITION: room {self.current_room}→{new_room}  pos ({self.player.x},{self.player.y})→({x},{y})")
         self.carry_mobiles()
         self.cbm_cache.pop(self.current_room, None)       # 0x032A rebuilds a room on entry
         self.cbm_backup.pop(self.current_room, None)
         self.current_room = new_room
-        self.player.x = cx + 160
-        self.player.y = dx + 96
-        self.player.shots.clear()
+        self.player.x, self.player.y = x, y
         self.player.explosions.clear()
+        self.enter_room()
 
     def set_level(self, level):
         if 0 <= level < 3:
@@ -2351,6 +2286,7 @@ class JetPackJoe:
             bcol = self.beam_tile % MAP_COLS
             brow = self.beam_tile // MAP_COLS
             self.player = Player(bcol * TILE_W + 23, brow * TILE_H + 16)
+            self.player.next_time = self.tick
             # Start beam-in animation (matching GAME.EXE 0x0C5B-0x0C78)
             self.beam_in = {"tile": self.beam_tile, "frame": 15, "timer": 0}
             play_sound(SND_TRANSPORTER)          # 0x0AFC
@@ -2424,46 +2360,32 @@ class JetPackJoe:
                 beaming = self.beam_out is not None or self.beam_in is not None
                 dying = self.death is not None
                 keys = pygame.key.get_pressed()
+                inp = 0
                 if not beaming and not dying:
-                    self.player.vx = 0
                     if keys[pygame.K_LEFT]:
-                        self.player.vx = -MOVE_SPEED
-                        self.player.direction = -1
+                        inp |= INP_LEFT
                     if keys[pygame.K_RIGHT]:
-                        self.player.vx = MOVE_SPEED
-                        self.player.direction = 1
-                    self.player.thrusting = keys[pygame.K_SPACE] or keys[pygame.K_UP]
+                        inp |= INP_RIGHT
+                    if keys[pygame.K_SPACE] or keys[pygame.K_UP]:
+                        inp |= INP_THRUST
                     if keys[pygame.K_z]:
-                        self.player.fire()
+                        inp |= INP_FIRE
                 if dying:
                     self.update_death()
                 elif not beaming:
-                    cbm, pipe_floors, pipe_ceilings = self.get_collision_bitmap(self.current_room)
-                    backup = self.cbm_backup[self.current_room]
-                    self.joe_check_and_unmark(cbm, backup)
-                    if self.death is None:
-                        self.update_objects()
-                        self.player.update(cbm, self.sprites, pipe_floors, pipe_ceilings, backup)
-                        # Crush check (0x0CFB-0x0D5B): if something moved into Joe, try the
-                        # original's 9 nudge positions; if none is free he dies.
-                        px, py = int(self.player.x), int(self.player.y)
-                        if joe_hits_bg(cbm, px, py):
-                            for ddx, ddy in CRUSH_NUDGES:
-                                if not joe_hits_bg(cbm, px + ddx, py + ddy):
-                                    self.player.x = px + ddx
-                                    self.player.y = py + ddy
-                                    break
-                            else:
-                                if os.environ.get("JPJ_DEBUG"):
-                                    print(f"CRUSHED at ({px},{py}) room {self.current_room}")
-                                self.start_death()
+                    self.update_objects()
+                    # Joe runs every 10 ticks (0x06BB), ~1.94 times per 60 Hz frame
+                    while self.player.next_time <= self.tick and self.death is None:
+                        self.player.step(self, inp)
+                        self.player.next_time += JOE_INTERVAL
+                    if self.player.next_time <= self.tick:          # died mid-frame: stay in step
+                        self.player.next_time = self.tick + JOE_INTERVAL
+                    self.player.update_explosions()
                 else:
                     self.update_objects()
-                self.try_room_transition()
+                    self.player.next_time = self.tick + JOE_INTERVAL
                 if self.current_room != self.last_room:
                     self.enter_room()
-                if not beaming and self.death is None:
-                    self.joe_mark()
                 self.update_entities()
                 # Level completion: start beam-out when all captives rescued
                 if self.captive_count <= 0 and self.beam_out is None and self.level_complete_timer == 0:
@@ -2478,7 +2400,7 @@ class JetPackJoe:
                         self.game_over = True
                     else:
                         self.player.y = 40
-                        self.player.vy = 0
+                        self.player.vy = self.player.frac = 0
                 self.time_counter += 1
                 if self.time_counter >= FPS:
                     self.time_counter = 0
