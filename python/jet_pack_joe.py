@@ -40,14 +40,13 @@ MAP_COLS, MAP_ROWS = 20, 16
 ROOM_BYTES = 960
 SCREEN_W = MAP_COLS * TILE_W   # 320
 SCREEN_H = MAP_ROWS * TILE_H   # 192
-STATUS_H = 16
-TOTAL_H = SCREEN_H + STATUS_H  # 208
+STATUS_H = 8                   # one row of the 8x8 status font at y=192 (0x4761: DX=0xC0)
+TOTAL_H = SCREEN_H + STATUS_H  # 200: the whole Mode X screen
 SCALE = 3
 WIN_W, WIN_H = SCREEN_W * SCALE, TOTAL_H * SCALE
 FPS = 60
 SHOT_SPEED = 5
 SHOT_LIFE = 40
-TIME_LIMIT = 999
 
 # Joe sprite indices: 0-7 (even=left, odd=right)
 
@@ -60,6 +59,32 @@ def load_raw(fn):
 def load_palette(fn):
     raw = load_raw(fn)
     return [(min(255, raw[i*3]*4), min(255, raw[i*3+1]*4), min(255, raw[i*3+2]*4)) for i in range(256)]
+
+
+# Status bar font: GAME.EXE CS:0x31EC is a table of 128 glyph pointers, 8 bytes per glyph, one
+# bit per pixel with bit 0 on the LEFT (0x350C shifts the row out plane by plane), drawn 8 rows
+# tall. Characters 32-127 copied verbatim.
+STATUS_FONT = bytes.fromhex("0000000000000000000c0c0c0c000c0c000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000c0c0600000000000000000000000000000c0c0000000000000000007f63636363637f0060606060606060007f60607f03037f007f60607f60607f006363637f606060007f03037f60607f007f03037f63637f007f606060606060007f63637f63637f007f63637f60607f00000c0c000c0c000000000000000000000000000000000000000000000000000000000000000000003e633018000c0c0000000000000000003e63637f636363003f63633f63633f003e63030303633f003f63636363633f007f03031f03037f007f03031f030303003e63030373637e006363637f636363000c0c0c0c0c0c0c006060606060633e0063331b0f1b3363000303030303037f0063777f6b6363630063676f7b736363003e63636363633e003e63633f030303003e6363637b337e003f63633f1b3363003e63033e60633e003f0c0c0c0c0c0c006363636363633e0063636363361c08006363636b7f77630063361c081c36630033331e0c0c0c0c007f6030180c067f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000")
+_glyph_cache = {}
+
+
+def draw_text8(surface, x, y, text, color):
+    """Draw `text` in the original 8x8 status font (0x35A0 draws a string 8 px per glyph)."""
+    for ch in text:
+        c = ord(ch) if 32 <= ord(ch) < 128 else 32
+        key = (c, color)
+        glyph = _glyph_cache.get(key)
+        if glyph is None:
+            glyph = pygame.Surface((8, 8))
+            glyph.set_colorkey((0, 0, 0))
+            rows = STATUS_FONT[(c - 32) * 8:(c - 32) * 8 + 8]
+            for r, bits in enumerate(rows):
+                for b in range(8):
+                    if bits & (1 << b):
+                        glyph.set_at((b, r), color)
+            _glyph_cache[key] = glyph
+        surface.blit(glyph, (x, y))
+        x += 8
 
 
 def decode_sprites(sp_data, pal):
@@ -1037,8 +1062,7 @@ class Player:
         self.next_time = 0        # [0x23D2]
         self.body_sprite = 1
         self.flame_sprite = 9
-        self.time = TIME_LIMIT
-        self.lives = 3
+        self.time = 0             # [0x23DA]: the level trailer's timer, set by set_level
         self.explosions = []
 
     # -- helpers --
@@ -1163,6 +1187,164 @@ class Player:
             e.draw(surface, sprites)
 
 
+# Transporter beam frames (DS:0x3389): 3x3 tiles per frame, 17 frames, 0 = leave the tile.
+BEAM_FRAMES = [
+    [(0,0),(1,213),(2,0),(20,0),(21,213),(22,0),(40,0),(41,213),(42,0)],
+    [(0,0),(1,214),(2,0),(20,0),(21,214),(22,0),(40,0),(41,214),(42,0)],
+    [(0,0),(1,215),(2,0),(20,0),(21,215),(22,0),(40,0),(41,215),(42,0)],
+    [(0,234),(1,214),(2,235),(20,234),(21,214),(22,235),(40,234),(41,214),(42,235)],
+    [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
+    [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
+    [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
+    [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
+    [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
+    [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
+    [(0,217),(1,217),(2,217),(20,217),(21,217),(22,217),(40,217),(41,217),(42,217)],
+    [(0,218),(1,218),(2,218),(20,218),(21,218),(22,218),(40,218),(41,218),(42,218)],
+    [(0,236),(1,236),(2,236),(20,218),(21,218),(22,218),(40,237),(41,237),(42,237)],
+    [(0,238),(1,238),(2,238),(20,218),(21,218),(22,218),(40,239),(41,239),(42,239)],
+    [(0,0),(1,0),(2,0),(20,218),(21,218),(22,218),(40,0),(41,0),(42,0)],
+    [(0,0),(1,0),(2,0),(20,219),(21,219),(22,219),(40,0),(41,0),(42,0)],
+    [(0,0),(1,0),(2,0),(20,0),(21,0),(22,0),(40,0),(41,0),(42,0)],
+]
+
+
+# ---------------------------------------------------------------------------
+# Cutscenes — GAME.EXE 0x2750 plays entry AX of the table at DS:0x3D12:
+#   0 FA00 thumbs-up (after each level), 1 FA01 reaper (after the first death),
+#   2 FA02 title (at start), 3 FA03 credits (after the last level). Each entry names the
+# resource, its palette and the delay between frames in object-counter ticks (1165.2 Hz).
+# ---------------------------------------------------------------------------
+ANIM_THUMBS_UP, ANIM_REAPER, ANIM_TITLE, ANIM_CREDITS = range(4)
+ANIMS = [("FA00.DAT", "PL00.DAT", 140), ("FA01.DAT", "PL00.DAT", 200),
+         ("FA02.DAT", "PL01.DAT", 3000), ("FA03.DAT", "PL01.DAT", 6000)]
+FADE_STEPS = 33                            # 0x2A24/0x29F2: palette scaled 0..256 by 8 per vsync
+FADE_TICKS = FADE_STEPS * 1165.2 / 70      # one vsync per step at 70 Hz
+
+
+def decode_fa(data):
+    """FA resource (0x285D): a 64000-byte 320x200 base image followed by delta frames. Each
+    frame is a stream of op bytes: bits 7-6 op, bit 5 "count has a second byte", bits 4-0 the
+    count-1 (high bits when extended). Ops: 0 skip, 1 literal bytes follow, 2 repeat the
+    previous pixel, 3 copy from the base image. FF FF ends a frame; a second FF FF ends the
+    file. Returns the list of complete 64000-byte frames in play order."""
+    base = data[:64000]
+    screen = bytearray(base)
+    frames = []
+    pos = 64000
+    while pos + 1 < len(data) and not (data[pos] == 0xFF and data[pos + 1] == 0xFF):
+        di = 0
+        while True:
+            b = data[pos]
+            pos += 1
+            count = b & 0x1F
+            if b & 0x20:
+                lo = data[pos]
+                pos += 1
+                if b == 0xFF and lo == 0xFF:
+                    break
+                count = (count << 8) | lo
+            count += 1
+            op = b >> 6
+            if op == 1:
+                screen[di:di + count] = data[pos:pos + count]
+                pos += count
+            elif op == 2:
+                screen[di:di + count] = bytes([screen[di - 1]]) * count
+            elif op == 3:
+                screen[di:di + count] = base[di:di + count]
+            di += count
+        frames.append(bytes(screen))
+    return frames
+
+
+_anim_cache = {}
+
+
+def load_anim(idx):
+    if idx not in _anim_cache:
+        fa, pl, _ = ANIMS[idx]
+        _anim_cache[idx] = (decode_fa(load_raw(fa)), load_palette(pl))
+    return _anim_cache[idx]
+
+
+class Cutscene:
+    """One run of 0x2750: fade in on the first frame, show the next frame every `delay`
+    ticks, fade out as soon as the last one is up. Not skippable, as in the original."""
+
+    def __init__(self, idx, tick):
+        frames, self.pal = load_anim(idx)
+        self.idx = idx
+        self.delay = ANIMS[idx][2]
+        self.surfs = [pygame.image.frombuffer(f, (SCREEN_W, TOTAL_H), "P") for f in frames]
+        self.t0 = tick
+        self.frame = 0
+        self.phase = "in"
+        self.factor = 0.0
+        self.done = False
+
+    def update(self, tick):
+        t = tick - self.t0
+        if self.phase == "in":
+            self.factor = min(1.0, t / FADE_TICKS)
+            if t >= FADE_TICKS:
+                self.phase, self.t0 = "play", tick
+        elif self.phase == "play":
+            self.factor = 1.0
+            due = int(t // self.delay)
+            self.frame = min(due, len(self.surfs) - 1)
+            if due >= len(self.surfs) - 1:
+                self.phase, self.t0 = "out", tick
+        else:
+            self.factor = max(0.0, 1.0 - t / FADE_TICKS)
+            if t >= FADE_TICKS:
+                self.done = True
+
+    def draw(self, screen):
+        surf = self.surfs[self.frame]
+        k = self.factor
+        surf.set_palette([(int(r * k), int(g * k), int(b * k)) for r, g, b in self.pal])
+        screen.blit(surf, (0, 0))
+
+
+def anims_enabled_from_args(argv):
+    return "--no-anims" not in argv and os.environ.get("JPJ_ANIMS", "1") != "0"
+
+
+class TimeoutBeam(Entity):
+    """Handler 0x0A38, created by 0x0A5E once TIME has run out: a transporter beam at a random
+    clear 3x3 block, interval 0x46 ticks, counter 15 -> 0 drawing BEAM_FRAMES; a Ball
+    materialises at its centre when the counter reaches 12 (0x0B30), frame 16 clears it."""
+    interval = 0x46
+
+    def __init__(self, g, tile, x, y):
+        super().__init__(x, y, g.tick)
+        self.tile = tile
+        self.counter = 15
+        self.room = g.current_room
+        self.tiles = g.tile_surfs
+        play_sound(SND_TRANSPORTER)                          # 0x0AFC
+
+    def update(self, g):
+        if self.counter < 0:
+            self.alive = False
+            return
+        if self.counter == 12:
+            g.entities.append(Ball(g, self.x, self.y))
+        self.counter -= 1
+
+    def draw(self, surface, sprites, frame):
+        f = self.counter + 1                                 # the frame the last update drew
+        if 0 <= f <= 15:
+            col, row = self.tile % MAP_COLS, self.tile // MAP_COLS
+            for toff, ti in BEAM_FRAMES[f]:
+                if ti:
+                    ts = self.tiles[ti]
+                    ts.set_colorkey((0, 0, 0))
+                    surface.blit(ts, ((col + toff % 20) * TILE_W, (row + toff // 20) * TILE_H))
+                    ts.set_colorkey(None)
+
+
 class JetPackJoe:
     def __init__(self):
         pygame.init()
@@ -1171,7 +1353,6 @@ class JetPackJoe:
         pygame.display.set_caption("Jet Pack Joe — Joe Lowe (1990s)")
         self.screen = pygame.Surface((SCREEN_W, TOTAL_H))
         self.clock = pygame.time.Clock()
-        self.font = pygame.font.SysFont("monospace", 10)
 
         self.blk = load_raw("BK00.DAT")
         self.col_data = load_raw("CB00.DAT")
@@ -1196,6 +1377,11 @@ class JetPackJoe:
         self.cbm = self.cbm_bak = None
         self.goto_buf = None     # digits typed after G (debug "go to room"), None when inactive
         self.enemies_enabled = "--no-enemies" not in sys.argv and os.environ.get("JPJ_ENEMIES", "1") != "0"
+        self.anims_enabled = anims_enabled_from_args(sys.argv)
+        self.cutscene = None      # a Cutscene while one plays; the game is frozen underneath
+        self.cutscene_then = None
+        self.fade = None          # level palette fade: {"t0", "dir": +1 in / -1 out, "then"}
+        self.reaper_shown = False # [0x2EE]: FA01 plays only after the first death
         self.set_level(0)
 
     def build_assets(self):
@@ -1240,8 +1426,10 @@ class JetPackJoe:
         first_off = struct.unpack_from('<H', lv_data, 0)[0]
         # Room 68's offset + 8 (skip header) = start of trailer data
         trailer_off = struct.unpack_from('<H', lv_data, 68 * 2)[0] + 8
-        self.captive_count = struct.unpack_from('<H', lv_data, trailer_off)[0]
-        self.beam_tile = struct.unpack_from('<H', lv_data, trailer_off + 6)[0]
+        self.captive_count = struct.unpack_from('<H', lv_data, trailer_off)[0]     # [0x305F]
+        self.level_timer = struct.unpack_from('<H', lv_data, trailer_off + 2)[0]     # [0x23DA]
+        self.start_room = struct.unpack_from('<H', lv_data, trailer_off + 4)[0]      # [0x23DC]
+        self.beam_tile = struct.unpack_from('<H', lv_data, trailer_off + 6)[0]       # [0x23BF]
         # Beam-in will be started in set_level after player is created
         trailer_pos = trailer_off + 8  # skip 4 header words (captive count, timer, room, value)
         while trailer_pos + 1 < len(lv_data):
@@ -1884,26 +2072,7 @@ class JetPackJoe:
                 continue
             if sp:
                 surface.blit(sp["surf"], (x + sp["x_off"], y + sp["y_off"]))
-        # Beam-out/beam-in animation (cage disappear frames, DS:0x3389)
-        BEAM_FRAMES = [
-            [(0,0),(1,213),(2,0),(20,0),(21,213),(22,0),(40,0),(41,213),(42,0)],
-            [(0,0),(1,214),(2,0),(20,0),(21,214),(22,0),(40,0),(41,214),(42,0)],
-            [(0,0),(1,215),(2,0),(20,0),(21,215),(22,0),(40,0),(41,215),(42,0)],
-            [(0,234),(1,214),(2,235),(20,234),(21,214),(22,235),(40,234),(41,214),(42,235)],
-            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
-            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
-            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
-            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
-            [(0,216),(1,215),(2,216),(20,216),(21,215),(22,216),(40,216),(41,215),(42,216)],
-            [(0,215),(1,214),(2,215),(20,215),(21,214),(22,215),(40,215),(41,214),(42,215)],
-            [(0,217),(1,217),(2,217),(20,217),(21,217),(22,217),(40,217),(41,217),(42,217)],
-            [(0,218),(1,218),(2,218),(20,218),(21,218),(22,218),(40,218),(41,218),(42,218)],
-            [(0,236),(1,236),(2,236),(20,218),(21,218),(22,218),(40,237),(41,237),(42,237)],
-            [(0,238),(1,238),(2,238),(20,218),(21,218),(22,218),(40,239),(41,239),(42,239)],
-            [(0,0),(1,0),(2,0),(20,218),(21,218),(22,218),(40,0),(41,0),(42,0)],
-            [(0,0),(1,0),(2,0),(20,219),(21,219),(22,219),(40,0),(41,0),(42,0)],
-            [(0,0),(1,0),(2,0),(20,0),(21,0),(22,0),(40,0),(41,0),(42,0)],
-        ]
+        # Beam-out/beam-in animation (BEAM_FRAMES, DS:0x3389)
         active_beam = self.beam_out or self.beam_in
         if active_beam is not None:
             f = active_beam["frame"]
@@ -1949,11 +2118,7 @@ class JetPackJoe:
                             self.beam_in = {"tile": dest_tile, "frame": 15, "timer": 0}
                             play_sound(SND_TRANSPORTER)   # 0x2020 (beam-in object init)
                         else:
-                            # Level-complete beam-out → advance level
-                            if self.current_level < 2:
-                                self.set_level(self.current_level + 1)
-                            else:
-                                self.game_won = True
+                            self.end_level(won=True)      # level-complete beam-out
                 else:
                     # Beam-in: frames 15→0 (reverse)
                     self.beam_in["frame"] -= 1
@@ -2252,15 +2417,59 @@ class JetPackJoe:
         self.player.explosions[:] = [e for e in self.player.explosions if e.alive]
 
     def finish_death(self):
-        """The demo's caller (0x02C3) simply restarts the level on a lost life."""
         self.death = None
-        lives = self.player.lives - 1
-        if lives <= 0:
-            self.player.lives = 0
-            self.game_over = True
+        self.end_level(won=False)
+
+    def end_level(self, won):
+        """Level loop exit 0x078B-0x07A8: fade the palette out, then the caller (0x01CB-0x02D5)
+        decides. A completed level earns the thumbs-up and the next level, the credits after
+        the last one; a lost level simply restarts, after the reaper the first time. There
+        are no lives. After the credits the original exits to DOS; here the title comes back."""
+        def after_fade():
+            if won:
+                nxt = self.current_level + 1 if self.current_level + 1 < 3 else None
+                if nxt is not None:
+                    self.play_cutscene(ANIM_THUMBS_UP, lambda: self.set_level(nxt))
+                else:
+                    again = self.current_level if self.current_level >= 3 else 0
+                    self.play_cutscene(ANIM_THUMBS_UP, lambda: self.play_cutscene(
+                        ANIM_CREDITS, lambda: self.play_cutscene(
+                            ANIM_TITLE, lambda: self.set_level(again))))
+            elif not self.reaper_shown:
+                self.reaper_shown = True
+                self.play_cutscene(ANIM_REAPER, lambda: self.set_level(self.current_level))
+            else:
+                self.set_level(self.current_level)
+        self.fade = {"t0": self.tick, "dir": -1, "then": after_fade}
+
+    def play_cutscene(self, idx, then):
+        """0x2750 entry `idx`; `then` runs when it is over (at once with --no-anims)."""
+        if not self.anims_enabled:
+            then()
             return
-        self.set_level(self.current_level)
-        self.player.lives = lives
+        self.cutscene = Cutscene(idx, self.tick)
+        self.cutscene_then = then
+
+    def spawn_timeout_beam(self):
+        """0x0A5E: up to five random tiles (column <= 17) whose 3x3 block has no collision
+        and whose centre is clear of everything (shape 16) get a TimeoutBeam."""
+        room = self.current_room
+        map_data = self.levels[self.current_level]["map"]
+        words = struct.unpack_from('<320H', map_data, room * ROOM_BYTES)
+        cbm = self.get_collision_bitmap(room)[0]
+        for _ in range(5):
+            tile = random.randrange(0x118)
+            col, row = tile % MAP_COLS, tile // MAP_COLS
+            if col > 0x11:
+                continue
+            if any((words[(row + dr) * MAP_COLS + col + dc] >> 10) & 0x3F
+                   for dr in range(3) for dc in range(3)):
+                continue
+            x, y = col * TILE_W + 0x17, row * TILE_H + 0x11
+            if cb_check(cbm, 0x10, x >> 1, y >> 1, 0)[0] != 0:
+                continue
+            self.entities.append(TimeoutBeam(self, tile, x, y))
+            return
 
     def change_room(self, new_room, x, y):
         """ROOM CHANGE 0x0802 for Joe's own transition (0x0E30) — Joe lands at (x, y)."""
@@ -2278,19 +2487,20 @@ class JetPackJoe:
         if 0 <= level < len(self.levels):
             self.current_level = level
             self.build_assets()
-            self.current_room = 0
+            self.current_room = self.start_room
             # Position Joe at beam-in tile (matching GAME.EXE 0x0C7E)
             bcol = self.beam_tile % MAP_COLS
             brow = self.beam_tile // MAP_COLS
             self.player = Player(bcol * TILE_W + 23, brow * TILE_H + 16)
             self.player.next_time = self.tick
+            self.player.time = self.level_timer           # 0x063C: shown once 0x09DE first runs
+            self.time_counter = 0
             # Start beam-in animation (matching GAME.EXE 0x0C5B-0x0C78)
             self.beam_in = {"tile": self.beam_tile, "frame": 15, "timer": 0}
             play_sound(SND_TRANSPORTER)          # 0x0AFC
             self.beam_out = None
-            self.game_over = False
-            self.game_won = False
             self.level_complete_timer = 0
+            self.fade = {"t0": self.tick, "dir": 1, "then": None}   # 0x075E: palette fade-in
             self.cbm_cache = {}
             self.cbm_backup = {}
             self.entities = []
@@ -2323,7 +2533,6 @@ class JetPackJoe:
                         running = False
                     elif event.key == pygame.K_r:
                         self.set_level(self.current_level)
-                        self.game_over = False
                     elif event.key == pygame.K_RIGHTBRACKET:
                         self.jump_to_room(self.current_room + 1)
                     elif event.key == pygame.K_LEFTBRACKET:
@@ -2349,7 +2558,20 @@ class JetPackJoe:
                         pygame.image.save(shot, os.path.join(BASE, fname))
                         print(f"Saved {fname}")
 
-            if not self.game_over and not self.game_won:
+            if self.cutscene is not None:
+                self.tick += TICKS_PER_FRAME
+                self.cutscene.update(self.tick)
+                self.cutscene.draw(self.screen)
+                pygame.transform.scale(self.screen, (WIN_W, WIN_H), self.window)
+                pygame.display.flip()
+                if self.cutscene.done:
+                    then, self.cutscene = self.cutscene_then, None
+                    then()
+                continue
+            frozen = self.fade is not None and self.fade["dir"] < 0    # 0x079E fade-out
+            if frozen:
+                self.tick += TICKS_PER_FRAME
+            else:
                 self.tick += TICKS_PER_FRAME
                 self.frame_no += 1
                 if self.current_room != self.last_room:
@@ -2391,22 +2613,19 @@ class JetPackJoe:
                     self.beam_out = {"tile": tile, "frame": 0, "timer": 0}
                     play_sound(SND_TRANSPORTER)       # 0x1F62 via 0x0C27
                     self.level_complete_timer = 1  # flag: beam-out started
-                if self.player.y > SCREEN_H:
-                    self.player.lives -= 1
-                    if self.player.lives <= 0:
-                        self.game_over = True
-                    else:
-                        self.player.y = 40
-                        self.player.vy = self.player.frac = 0
                 self.time_counter += 1
-                if self.time_counter >= FPS:
+                if self.time_counter >= FPS:              # 0x09DE every 0x48D = 1165 ticks
                     self.time_counter = 0
-                    self.player.time -= 1
-                    if self.player.time <= 0:
-                        self.game_over = True
+                    if self.player.time > 0:
+                        self.player.time -= 1
+                    else:
+                        self.spawn_timeout_beam()         # 0x0A38 AX=0: TIME has run out
 
             self.draw()
             pygame.display.flip()
+            if frozen and self.tick - self.fade["t0"] >= FADE_TICKS:
+                then, self.fade = self.fade["then"], None
+                then()
         pygame.quit()
 
     def draw(self):
@@ -2414,7 +2633,7 @@ class JetPackJoe:
         self.screen.blit(self.render_room(self.current_room), (0, 0))
         self.draw_objects(self.screen, self.current_room)
         self.draw_entities(self.screen)
-        if not self.game_over:
+        if True:
             joe_hidden = False
             if self.beam_out and self.beam_out["frame"] >= 12:
                 joe_hidden = True
@@ -2434,32 +2653,44 @@ class JetPackJoe:
                 e.draw_laser(self.screen, self.sprites, self.frame_no)
         self.render_foreground(self.current_room, self.screen)
         # Draw explosions on top of everything (they occur at wall edges)
-        if not self.game_over:
-            for e in self.player.explosions:
-                e.draw(self.screen, self.sprites)
+        for e in self.player.explosions:
+            e.draw(self.screen, self.sprites)
         for e in self.entities:
             if isinstance(e, EnemyExplosion):
                 e.draw_top(self.screen, self.sprites)
 
+        self.draw_status_bar()
+        if self.fade is not None:                         # palette fade (0x2A24 / 0x29F2)
+            t = self.tick - self.fade["t0"]
+            k = min(1.0, t / FADE_TICKS)
+            if self.fade["dir"] < 0:
+                k = 1.0 - k
+            if k < 1.0:
+                self.screen.fill((int(255 * k),) * 3, special_flags=pygame.BLEND_MULT)
+            if self.fade["dir"] > 0 and t >= FADE_TICKS:
+                self.fade = None
+        pygame.transform.scale(self.screen, (WIN_W, WIN_H), self.window)
+
+
+    def draw_status_bar(self):
+        """0x4745: the 40-character line at y=192 from the buffer DS:0x2363, seeded from
+        DS:0x0321 with attribute 7 (palette 7, grey); 0x09F7 writes the TIME digits with
+        attribute 0x0A (palette 10, green). The debug prompts replace the middle text."""
         bar_y = SCREEN_H
         pygame.draw.rect(self.screen, (0, 0, 0), (0, bar_y, SCREEN_W, STATUS_H))
-        self.screen.blit(self.font.render(f"TIME: {self.player.time:03d}", False, (0, 255, 0)), (4, bar_y + 3))
+        pal = self.levels[self.current_level]["pal"]
+        time_s = f"{max(0, min(999, self.player.time)):03d}"
+        middle = "JET PACK JOE DEMO"
+        debug = None
         if self.goto_buf is not None:
-            self.screen.blit(self.font.render(f"GO TO ROOM: {self.goto_buf}_  (Enter / Esc)", False, (255, 255, 0)), (SCREEN_W // 2 - 90, bar_y + 3))
+            debug = f"GO TO ROOM: {self.goto_buf}_".ljust(17)
         elif not self.enemies_enabled:
-            self.screen.blit(self.font.render("NO ENEMIES", False, (255, 255, 0)), (SCREEN_W // 2 - 30, bar_y + 3))
-        else:
-            self.screen.blit(self.font.render(f"Rescues Remaining: {self.captive_count:02d}", False, (0, 255, 0)), (SCREEN_W // 2 - 66, bar_y + 3))
-        self.screen.blit(self.font.render(f"ROOM: {self.current_room:02d}", False, (0, 255, 0)), (SCREEN_W - 60, bar_y + 3))
-
-        if self.game_over:
-            go = self.font.render("GAME OVER - Press R", False, (255, 0, 0))
-            self.screen.blit(go, (SCREEN_W // 2 - go.get_width() // 2, SCREEN_H // 2))
-        elif self.game_won:
-            go = self.font.render("YOU WIN!", False, (255, 255, 0))
-            self.screen.blit(go, (SCREEN_W // 2 - go.get_width() // 2, SCREEN_H // 2))
-
-        pygame.transform.scale(self.screen, (WIN_W, WIN_H), self.window)
+            debug = "   NO ENEMIES    "
+        line = f"TIME: {time_s}   {debug or middle}   ROOM: {self.current_room:02d}"
+        draw_text8(self.screen, 0, bar_y, line, pal[7])
+        draw_text8(self.screen, 6 * 8, bar_y, time_s, pal[10])
+        if debug:
+            draw_text8(self.screen, 12 * 8, bar_y, debug, (255, 255, 0))
 
 
 def parse_start_arg(argv):
@@ -2518,4 +2749,6 @@ if __name__ == "__main__":
     if start:
         game.set_level(start[0])
         game.jump_to_room(start[1])
+    elif not level_path:
+        game.play_cutscene(ANIM_TITLE, lambda: game.set_level(0))   # 0x01CB: [cs:8](2)
     game.run()

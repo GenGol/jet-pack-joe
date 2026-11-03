@@ -424,7 +424,7 @@ by disassembling GAME.EXE routines (EXPAND_MAP, BLOCK_TO_XY, DRAW_SPRITE).
 - 68 rooms per level, 960 bytes per room (65280 / 960 = 68)
 - Each room = 320 background tile words (640 bytes) + 320 foreground tile bytes (320 bytes)
 - Grid: 20 columns × 16 rows, row-major order
-- Visible area: 320×192 pixels (20×16px wide, 16×12px tall) + status bar below
+- Visible area: 320×192 pixels (20×16px wide, 16×12px tall) + an 8-px status bar below (y=192), 200 lines in all
 - Each room is a single screen (not paired/stacked rooms)
 - Tile word encoding:
   - Bits 0–9: tile index into BK00.DAT (0–681)
@@ -484,6 +484,10 @@ by disassembling GAME.EXE routines (EXPAND_MAP, BLOCK_TO_XY, DRAW_SPRITE).
 - Table of contents: 4-byte ASCII name + 4-byte little-endian offset, repeated
 - Terminated by null name entry
 - All entries are CRAM-compressed (custom LZ77 variant)
+- `fa00`-`fa03` are the cutscenes (thumbs-up, reaper, title, credits): a 64000-byte 320×200
+  image followed by delta frames (op byte: bits 7-6 = skip / literal / repeat / copy-from-base,
+  bit 5 = two-byte count, bits 4-0 = count-1; `FF FF` ends a frame, twice ends the file).
+  `pl00`/`pl01` are their palettes. `jp00` is an older build of the game code, not data.
 - Contains 3 complete levels (lv11/mp11/pl11, lv12/mp12/pl12, lv13/mp13/pl13)
 
 **CRAM Compression:**

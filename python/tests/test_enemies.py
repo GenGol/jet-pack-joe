@@ -23,8 +23,9 @@ def wait_for_death(d, frames):
 def test_level_start_is_safe():
     """Plain level 1 start with the beam-in: Joe must not die or lose a life."""
     d = Driver()
+    assert d.g.player.time == 150, "L1 timer comes from the trailer (LV11 entry 68)"
     d.run(180)
-    assert d.g.death is None and d.g.player.lives == 3 and not d.g.game_over
+    assert d.g.death is None and d.g.player.time == 147, "TIME counts down once a second"
 
 
 def test_ball_kills_joe():
@@ -79,7 +80,9 @@ def test_shot_pops_ball():
     assert d.entities(Exp), "popped ball should leave an EnemyExplosion"
 
 
-def test_death_restarts_level_with_one_less_life():
+def test_death_restarts_level():
+    """No lives in the demo: the level loop returns with captives left and 0x02C3 restarts
+    the level (after the palette fade-out)."""
     d = Driver()
     d.goto(0, 5)
     d.place(160, 120)
@@ -87,18 +90,10 @@ def test_death_restarts_level_with_one_less_life():
     d.run(600, until=lambda g: g.death is None)
     g = d.g
     assert g.death is None, "death animation never finished"
-    assert g.player.lives == 2, f"lives = {g.player.lives}, expected 2"
+    assert g.fade is not None and g.fade["dir"] < 0, "palette fades out first"
+    d.run(120, until=lambda g: g.beam_in is not None and g.current_room == 0)
     assert g.current_room == 0 and g.beam_in is not None, "level should restart with the beam-in"
-
-
-def test_game_over_after_last_life():
-    d = Driver()
-    d.goto(0, 5)
-    d.g.player.lives = 1
-    d.place(160, 120)
-    wait_for_death(d, 2400)
-    d.run(600, until=lambda g: g.game_over)
-    assert d.g.game_over and d.g.player.lives == 0
+    assert g.player.time == 150
 
 
 def test_all_enemy_rooms_run_without_errors():

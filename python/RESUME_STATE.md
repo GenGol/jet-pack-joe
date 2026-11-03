@@ -2891,7 +2891,7 @@ decrements lives; normal level start and walking unaffected; 600 busy frames in 
 - Plate crush death: VERIFIED in L2 R18 — Joe hovering between the plates (y 60-119) is crushed;
   standing on the floor below them he is not, which is correct.
 - ~~Exact Joe physics~~ — ported 2026-11-03 (see "Joe's exact physics" below).
-- Status-bar font and colours, cutscenes (see Session 7 verification).
+- ~~Status-bar font and colours, cutscenes~~ — done 2026-11-03 (see "Cutscenes, status bar, level flow").
 
 ### Headless test suite (added 2026-11-01)
 
@@ -2975,7 +2975,7 @@ than the notes. Results:
 | Sound = PC speaker tones, no asset files | FALSE | five samples in DS00.DAT, 4-channel mixer (Session 7 sound) |
 | Status bar uses a "green digital font from CHAR.ASM" | HALF | font is a bold 8x8 in GAME.EXE at CS:0x31EC (128 glyph pointers, 8 bytes/glyph, drawn by 0x350C in Mode X); labels and ROOM digits are attr 7 = palette 7 grey (42,42,42); only the TIME digits are attr 0x0A = palette 10 green (21,63,21) (0x09F7). Confirmed by dosbox_room_4_door_closed.png. Original string: `TIME: 000   JET PACK JOE DEMO   ROOM: 00`; the Python's "Rescues Remaining" (Fix 21) is an invention. |
 | JET.EXE holds the title/menu/intro | FALSE | JET.EXE == J1.EXE, a 7 KB launcher (memory/VGA/CPU checks, sound-driver arg, archive loader). All animation code is GAME.EXE's ANIM.ASM (RUN_ANIM etc. in the symbol table). |
-| Cutscenes exist | TRUE, data not extracted | anim table DS:0x3D12 → 4 entries {resource, palette, length}: FA00/PL00/140, FA01/PL00/200, FA02/PL01/3000, FA03/PL01/6000. JET.RSC TOC: jp00 bk00 cb00 ds00 fa00-fa03 pl00 pl01 sh00 sp00 lv/mp/pl 11-13; **jp00, fa00-fa03 and pl01 were never UNCRAMed**. |
+| Cutscenes exist | TRUE (extracted and decoded 2026-11-03, see below) | anim table DS:0x3D12 → 4 entries {resource, palette, length}: FA00/PL00/140, FA01/PL00/200, FA02/PL01/3000, FA03/PL01/6000. JET.RSC TOC: jp00 bk00 cb00 ds00 fa00-fa03 pl00 pl01 sh00 sp00 lv/mp/pl 11-13; **jp00, fa00-fa03 and pl01 were never UNCRAMed**. |
 | When cutscenes play | PARTLY | 0x2750 (anim runner, AX<4) is called once with AX=1 at 0x02CD: after the FIRST time the level runner 0x05D1 returns with captives left (i.e. first death), then [0x2EE]=1 and the level restarts. Entry 0x01AD: `[cs:8](2) ; [cs:C](0) ; [cs:8](0) ; [cs:C](1) ; [cs:8](0) ; [cs:C](2) ; [cs:8](0) ; [cs:8](3) ; INT 61h` — [cs:C] is play-level(n) (0x0210 stores AX at [0x2BC], level table DS:0x2BE = pl/mp/lv 11-13); [cs:8] with 2 / 0 / 0 / 0 / 3 fits title / thumbs-up after each level / credits, but CS:0-F are loader-patched far pointers so this is inferred, not read. |
 | Muzzle flash exists | FALSE | fire handler 0x0EAA only creates the projectile (0xFE3) and plays sound 1; 0x0F05 is the death animation. |
 | Levels play in fixed sequence 1→2→3 | TRUE | entry sequence above; after level 3 the program exits to the launcher ("We hope you've enjoyed the game."). |
@@ -3134,3 +3134,74 @@ the left exit and a block one tile in: Cam reported "after entering room 1 I can
 middle (half-res +2..5, +2..3) behind the half wall. Tests: `tests/test_level_file.py` (loads,
 every room runs, flood-fill reachability of every room in each switch state so gates provably
 block and open, scripted walkthroughs of rooms 0 and 1 with hops and hovering).
+
+### Cutscenes, status bar, level flow and time-out (2026-11-03)
+
+Cam asked to finish the fidelity gaps. Everything below was read from GAME.EXE and checked
+against the extracted data; the Python now does the same.
+
+**Resources.** `jp00 fa00-fa03 pl00 pl01` were pulled out of JET.RSC and UNCRAMed (the
+`python/*.DAT` copies: FA00 99451, FA01 88075, FA02 64016, FA03 64018, PL01 768 bytes).
+JP00 is *code*: a 31 KB older build (Aug 1992) of the game whose offsets 0/4/8/C are
+`call X; retf` stubs — the far pointers GAME.EXE's entry calls through `[cs:8]`/`[cs:C]`.
+JP00:0x2436 is the same anim runner as GAME.EXE 0x2750 (table at 0x3A62 there), so the
+entry sequence `[cs:8](2) [cs:C](0) [cs:8](0) [cs:C](1) [cs:8](0) [cs:C](2) [cs:8](0)
+[cs:8](3)` is confirmed: **title, level 1, thumbs-up, level 2, thumbs-up, level 3,
+thumbs-up, credits, exit**. Not kept in the repo (it is code, not data).
+
+**FA format (0x285D).** 64000-byte linear 320x200 base image, then delta frames. Op byte:
+bits 7-6 op, bit 5 "count continues in the next byte" (count = low5<<8 | next), bits 4-0
+count-1. Ops: 0 skip, 1 literal bytes follow, 2 repeat the previous screen byte, 3 copy
+from the base image. `FF FF` ends a frame, a second `FF FF` ends the file. The stream
+pointer is a far pointer normalised every 32 KB (0x28CF/0x28F0) — linear in Python.
+Decoded: FA00 = Joe thumbs-up, 15 frames; FA01 = the Grim Reaper, eyes light up, 14 frames;
+FA02 = "Jet Pack Joe Demo / Version 1.0" title card, 2 identical frames; FA03 = Development
+Team credits (Joe Lowe, Nathan Lowe, Mark Loertscher, Jerry Hayward), 2 frames.
+
+**Runner (0x2750, AX = table index DS:0x3D12 {resource, palette, delay}).** Saves the Mode X
+page (A800, 32 KB), copies the base image to A000 linear, applies frame 1, fades the palette
+in (0x2A24: scale 0..256 step 8, one vsync per step = 33 vsyncs), then loops: wait `delay`
+object-counter ticks (1165.2 Hz: 140 / 200 / 3000 / 6000), wait vsync, apply the next frame,
+stop when the following word is FFFF; fades out (0x29F2) and restores the page. No key
+check — not skippable. Totals: title ≈ 0.47 + 2.6 + 0.47 s, credits ≈ 6 s, thumbs ≈ 2.6 s.
+
+**Level loop exit (0x078B).** `[0x305E]=1` ends the loop (death end 0x0FDB, or beam-out);
+carry = captives remain ([0x305F] != 0). Palette fade-out 0x29F2 either way; the level's
+first frame fades the palette in (0x075E). Caller 0x02BE: carry → if `[0x2EE]` already set,
+restart the level at once; else play anim 1 (reaper), set `[0x2EE]`, reload the level.
+**There are no lives** — the demo restarts the level for ever. The Python's 3 lives, GAME
+OVER and YOU WIN were inventions and are gone. After the credits the original exits to DOS
+("We hope you've enjoyed the game." comes from the launcher); the Python shows the title
+again and restarts level 1 (a loaded `--level` file restarts itself).
+
+**Level trailer (entry 68, read by 0x0633-0x0654):** captive count → [0x305F]; **timer+1 →
+[0x23DA]** (L1 150, L2 400, L3 400 seconds — the Python's TIME_LIMIT=999 was wrong); start
+room → [0x23DC]; beam tile → [0x23BF]; then the switch-off list.
+
+**TIME (0x09DE every 0x48D = 1165 ticks).** If [0x23DA] is 0 → call 0x0A38 AX=0; else
+decrement, convert, and write the three digits into the status buffer with attribute 0x0A.
+**0x0A5E (time has run out):** up to 5 tries: random tile < 0x118 with column <= 17 whose
+3x3 block has no collision in the expanded map (DS:0x5D7, one word per tile) and whose centre
+(tile x+0x17, y+0x11) is clear under shape 0x10; allocate a slot: handler 0x0A38, interval
+0x46, counter [DI+0x1C]=15, sound 3. Update draws beam frame `counter` (table DS:0x3389, the
+same 3x3 frames as cage disappear / beam-in), spawns a **Ball** (0x15A2 AX=0) at the centre
+when the counter is 12, and at 0xFF draws frame 16 (blank) and frees itself. So a ball
+beams in every second once TIME hits 000. Python: `TimeoutBeam`, `spawn_timeout_beam`.
+
+**Status bar (0x4745).** 40 words (char, attr) at DS:0x2363, seeded from DS:0x0321
+`TIME: 000   JET PACK JOE DEMO   ROOM: 00` with attribute 7 at level start (0x05FD); changed
+cells are redrawn at x = col*8, **y = 0xC0 = 192**, through 0x350C using the 8x8 font at
+CS:0x31EC (128 pointers, 8 bytes per glyph, **bit 0 is the left pixel**). Attribute 7 =
+palette 7 (42,42,42 → grey), TIME digits attribute 0x0A = palette 10 (21,63,21 green; PL12 has
+0,63,0). The screen is therefore 200 lines: 192 of play + 8 of bar (the Python used 16).
+Python: `STATUS_FONT` (chars 32-127 copied from the binary), `draw_text8`, `draw_status_bar`;
+the debug prompts (G room entry, NO ENEMIES) replace the middle 17 characters in yellow.
+
+**Python flow.** `play_cutscene(idx, then)` / `Cutscene` (frozen game underneath, 8-bit
+frames with the palette scaled for the fades), `end_level(won)` (fade-out, then thumbs-up →
+next level or credits → title → level 1; or reaper once → restart), `fade` state for the
+level palette fades. `--no-anims` / `JPJ_ANIMS=0` skips every cutscene (the harness default).
+A plain launch opens with the title; `--start` and `--level` launches skip it.
+Tests: `tests/test_cutscenes.py` (decoder frame counts, timing, reaper once, thumbs-up →
+level 2, level 3 → credits → title → level 1, time-out balls) and `tests/test_status_bar.py`
+(200-line screen, string/colours, font bytes vs GAME.EXE, debug prompt). 58 tests pass.

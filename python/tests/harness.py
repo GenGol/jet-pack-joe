@@ -45,10 +45,11 @@ class _Keys:
 
 
 class Driver:
-    def __init__(self, seed=1, level_file=None):
+    def __init__(self, seed=1, level_file=None, anims=False):
         random.seed(seed)
         self.g = J.JetPackJoe()
         self.g.clock = _NoClock()
+        self.g.anims_enabled = anims            # cutscenes freeze the game for seconds
         self.frame = 0
         if level_file:
             self.g.levels.append(J.load_level_file(level_file))
@@ -62,6 +63,7 @@ class Driver:
         if not skip_beam:
             self.g.beam_in = {"tile": self.g.beam_tile, "frame": 15, "timer": 0}
         self.g.player.time = 9999                # don't let the timer end a long test
+        self.g.fade = None                       # skip the level's palette fade-in
         self.g.enter_room()
 
     def place(self, x, y, radius=40):
