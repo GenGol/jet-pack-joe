@@ -8,7 +8,7 @@ from harness import Driver, J     # noqa: E402
 
 LEVEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "TESTLEVEL.JPL")
 EXPECTED = {0: {1, 2, 3, 4, 5, 6, 17}, 1: {6, 7, 8, 9, 13, 17}, 2: {10, 15, 16}, 3: {11, 12, 20},
-            4: {5, 14, 18}, 5: {19}, 6: {19}}
+            4: {5, 14, 18}, 5: {19}, 6: {19}, 7: {22, 23}}
 
 
 def test_level_file_loads_with_every_object_type():
@@ -26,7 +26,7 @@ def test_every_room_runs_and_spawns_its_entities():
     d = Driver(level_file=LEVEL)
     g = d.g
     failures = []
-    for room in range(7):
+    for room in range(8):
         try:
             d.goto(3, room)
             d.run(40)
@@ -39,6 +39,8 @@ def test_every_room_runs_and_spawns_its_entities():
     assert d.entities(J.BallGen) and d.entities(J.BirdGen) and d.entities(J.OrbGen)
     d.goto(3, 5)
     assert len(d.entities(J.Teleporter)) == 3
+    d.goto(3, 7)
+    assert len(d.entities(J.Pack)) == 2 and len(d.entities(J.Turret)) == 1
 
 
 from collections import deque   # noqa: E402
@@ -142,6 +144,13 @@ def test_every_room_is_traversable_and_its_gates_gate():
     assert right_exit(seen)
     seen, o = room_state(d, 4, {21: 0})
     assert not touches(seen, o[(18, 8, 14)]["x"], o[(18, 8, 14)]["y"]), "closed door 1 should block"
+
+    # Room 7: both packs can be touched; the turret (an enemy, so ignored by the flood fill)
+    # stands on the floor between them and the exit is open.
+    seen, o = room_state(d, 7, {})
+    for key in ((22, 3, 13), (22, 16, 13)):
+        assert touches(seen, o[key]["x"] + 4, o[key]["y"] + 4, 8, 4), f"pack {key} out of reach"
+    assert right_exit(seen)
 
     # Rooms 5 and 6: every teleporter trigger (shape 4 at tile +16,+12) can be entered.
     seen, o = room_state(d, 5, {})

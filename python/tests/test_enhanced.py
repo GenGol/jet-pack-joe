@@ -1,0 +1,157 @@
+"""Enhanced mode: packs (type 22), the turret (type 23), the shield and the twin shot.
+
+Run:   python3 python/tests/test_enhanced.py     (plain runner, no pytest needed)
+"""
+import sys
+import os
+import traceback
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from harness import Driver, J     # noqa: E402
+import pygame                     # noqa: E402
+
+LEVEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "TESTLEVEL.JPL")
+ROOM = 7
+FLOOR_Y = 164                     # Joe standing on the floor of a test-level room
+TURRET_X, TURRET_Y = 10 * 16 + 8, 14 * 12 + 6
+
+
+def armoury(enhanced=True, enemies=True):
+    d = Driver(level_file=LEVEL, enhanced=enhanced)
+    d.g.enemies_enabled = enemies
+    d.goto(3, ROOM)
+    return d, d.g
+
+
+def test_original_levels_contain_no_enhanced_objects():
+    """The faithful port is untouched: no pack or turret in any room of levels 1-3."""
+    d = Driver()
+    for lvl in range(3):
+        d.g.set_level(lvl)
+        found = [(room, o["type"]) for room, objs in d.g.room_objects.items()
+                 for o in objs if o["type"] in (22, 23)]
+        assert not found, f"level {lvl + 1}: {found}"
+
+
+def test_room_has_two_packs_and_a_turret():
+    d, g = armoury()
+    packs = sorted(d.entities(J.Pack), key=lambda e: e.x)
+    assert [p.kind for p in packs] == [J.PACK_TWIN, J.PACK_SHIELD]
+    t = d.entities(J.Turret)
+    assert len(t) == 1 and (t[0].x, t[0].y) == (TURRET_X, TURRET_Y) and t[0].hp == J.TURRET_HP
+    assert J.cb_check(g.cbm, 2, t[0].x >> 1, t[0].y >> 1, 0)[1][J.CT_ENEMY] > 0, "turret writes type 6"
+
+
+def test_classic_flag_ignores_packs_and_turrets():
+    d, g = armoury(enhanced=False)
+    assert not d.entities(J.Pack) and not d.entities(J.Turret)
+    g.player.pack = J.PACK_TWIN
+    d.run(1, keys={"fire"})
+    assert len(d.entities(J.Shot)) == 1, "classic mode fires a single shot even with a pack set"
+
+
+def test_pack_pickup_is_remembered():
+    d, g = armoury(enemies=False)                        # the turret would shoot at Joe here
+    pack = min(d.entities(J.Pack), key=lambda e: e.x)
+    d.place(pack.x + 8, FLOOR_Y)
+    d.run(60, until=lambda g: g.player.pack is not None)
+    assert g.player.pack == J.PACK_TWIN
+    assert g.switch_state[pack.var] == 0 and not any(p.kind == J.PACK_TWIN for p in d.entities(J.Pack))
+    assert J.SND_PICKUP in g.sound.history
+    g.last_room = None                                   # re-enter the room: the pack is gone
+    d.run(1)
+    assert [p.kind for p in d.entities(J.Pack)] == [J.PACK_SHIELD]
+
+
+def test_twin_shot_fires_two_shots_per_press():
+    d, g = armoury()
+    d.place(160, 60)
+    d.run(1, keys={"fire"})
+    assert len(d.entities(J.Shot)) == 1
+    d.run(130)                                           # the shot has crossed the room
+    assert not d.entities(J.Shot)
+    g.player.pack = J.PACK_TWIN
+    d.run(1, keys={"fire"})
+    shots = d.entities(J.Shot)
+    assert len(shots) == 2 and len({s.y for s in shots}) == 2, "two stacked shots"
+
+
+def test_shield_absorbs_one_death_then_breaks():
+    """L1 R5's balls kill an unprotected Joe in under 2400 frames (test_ball_kills_joe)."""
+    d = Driver()
+    d.goto(0, 5)
+    g = d.g
+    d.place(160, 120)
+    g.player.pack = J.PACK_SHIELD
+    d.run(2400, until=lambda g: g.player.pack is None or g.death is not None)
+    assert g.death is None, "the shield should have taken the first hit"
+    assert g.player.pack is None and g.player.invuln_until > g.tick, "shield consumed, Joe invulnerable"
+    d.run(2400, until=lambda g: g.death is not None)
+    assert g.death is not None, "without the shield Joe dies"
+
+
+def test_turret_fires_at_joe_in_its_row_and_the_bullet_kills():
+    d, g = armoury()
+    d.place(TURRET_X + 70, FLOOR_Y)
+    assert abs(g.player.y - TURRET_Y) <= J.TURRET_RANGE_Y
+    d.run(30, until=lambda g: any(isinstance(e, J.TurretShot) for e in g.entities))
+    bullets = d.entities(J.TurretShot)
+    assert bullets and bullets[0].speed > 0, "a bullet flies right, toward Joe"
+    assert J.SND_TURRET in g.sound.history
+    d.run(120, until=lambda g: g.death is not None)
+    assert g.death is not None, "the bullet should have killed Joe"
+
+
+def test_turret_does_not_fire_at_joe_above_its_row():
+    d, g = armoury()
+    d.place(TURRET_X + 70, 60)
+    for _ in range(120):
+        d.run(1, keys={"thrust"} if g.player.y > 60 else set())
+    assert not any(isinstance(e, J.TurretShot) for e in g.entities) and g.death is None
+
+
+def test_three_hits_destroy_the_turret():
+    """Joe stands in the turret's row with a shield, which absorbs the turret's first bullet
+    and keeps him alive long enough for three shots to land."""
+    d, g = armoury()
+    d.place(TURRET_X + 70, FLOOR_Y)
+    g.player.direction = 0
+    g.player.pack = J.PACK_SHIELD
+    turret = d.entities(J.Turret)[0]
+    d.run(150, keys={"fire"}, until=lambda g: not turret.alive or g.death is not None)
+    assert g.death is None, f"Joe died with the turret at {turret.hp} hp"
+    assert not turret.alive and d.entities(J.EnemyExplosion), "turret should explode after 3 hits"
+    assert J.cb_check(g.cbm, 2, turret.x >> 1, turret.y >> 1, 0)[0] == 0, "its collision is erased"
+
+
+def test_status_bar_shows_the_pack():
+    d, g = armoury()
+    g.player.pack = J.PACK_TWIN
+    g.player.time = 150
+    d.run(1)
+    pal = g.levels[3]["pal"]
+    ref = pygame.Surface((17 * 8, 8))
+    J.draw_text8(ref, 0, 0, "PACK: TWIN SHOT  ", pal[11])
+    assert all(g.screen.get_at((96 + x, 192 + y))[:3] == ref.get_at((x, y))[:3]
+               for y in range(8) for x in range(17 * 8)), "pack slot text differs"
+    g.player.pack = None
+    d.run(1)
+    assert g.screen.get_at((96 + 1, 192 + 1))[:3] != pal[11], "slot reverts to the demo text"
+
+
+TESTS = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
+
+if __name__ == "__main__":
+    failed = 0
+    for t in TESTS:
+        if sys.argv[1:] and t.__name__ not in sys.argv[1:]:
+            continue
+        try:
+            t()
+            print(f"PASS  {t.__name__}")
+        except Exception as e:
+            failed += 1
+            print(f"FAIL  {t.__name__}: {e}")
+            if os.environ.get("JPJ_DEBUG"):
+                traceback.print_exc()
+    sys.exit(1 if failed else 0)

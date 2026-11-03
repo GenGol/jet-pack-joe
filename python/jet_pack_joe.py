@@ -27,6 +27,9 @@ Controls:
   R          — Restart
   [ / ]      — Previous/Next room (debug)
   1 / 2 / 3  — Switch level
+
+Flags: --level FILE (a JPL1 level, becomes level 4), --start L:R, --no-enemies, --no-anims,
+       --classic (ignore the enhanced-mode objects: packs and turrets; see "Enhanced mode").
 """
 
 import struct, os, sys, time, random, copy
@@ -892,7 +895,27 @@ class BirdGen(Generator):
 # ---------------------------------------------------------------------------------------------
 SOUND_RATE = 1193182 / 128                     # 9321.7 Hz
 SND_EXPLOSION, SND_SHOOT, SND_HELP, SND_TRANSPORTER, SND_THANKS = range(5)
-SOUND_NAMES = ("explosion", "shoot", "help me", "transporter", "thank you")
+SND_PICKUP, SND_TURRET = 5, 6                  # enhanced mode only: synthesized, not in DS00.DAT
+SOUND_NAMES = ("explosion", "shoot", "help me", "transporter", "thank you", "pickup", "turret")
+
+
+def synth_tone(freq, ms, amp=12):
+    """A square wave as 6-bit mixer samples (centre 0x20) at the mixer's 9.3 kHz."""
+    n = int(SOUND_RATE * ms / 1000)
+    half = SOUND_RATE / freq / 2
+    return bytes(0x20 + (amp if int(i / half) & 1 else -amp) for i in range(n))
+
+
+def synth_pickup():
+    """Three rising notes: the pack pickup."""
+    return synth_tone(660, 45) + synth_tone(880, 45) + synth_tone(1320, 90)
+
+
+def synth_turret():
+    """A decaying noise burst: the turret firing."""
+    rng = random.Random(7)
+    n = int(SOUND_RATE * 0.07)
+    return bytes(0x20 + int(rng.uniform(-1, 1) * 24 * (1 - i / n)) for i in range(n))
 SOUND = None                                   # the active SoundBank, set by its constructor
 
 
@@ -928,6 +951,8 @@ class SoundBank:
         offs = [struct.unpack_from('<H', data, 2 * i)[0] * 16 for i in range(6)]
         for i in range(5):
             self.sounds.append(self._convert(data[offs[i]:offs[i + 1]], rate, nch))
+        for raw in (synth_pickup(), synth_turret()):           # SND_PICKUP, SND_TURRET
+            self.sounds.append(self._convert(raw, rate, nch))
         pygame.mixer.set_num_channels(self.CHANNELS)
         self._channels = [pygame.mixer.Channel(i) for i in range(self.CHANNELS)]
         self.enabled = True
@@ -1064,6 +1089,8 @@ class Player:
         self.flame_sprite = 9
         self.time = 0             # [0x23DA]: the level trailer's timer, set by set_level
         self.explosions = []
+        self.pack = None          # enhanced mode: PACK_TWIN / PACK_SHIELD / None
+        self.invuln_until = -1.0  # enhanced mode: tick until which a broken shield protects Joe
 
     # -- helpers --
     @staticmethod
@@ -1091,6 +1118,8 @@ class Player:
         if g.death is not None:
             return
         pos = self._unstick(cbm, x, y)                   # 0x0CFB crush check
+        if pos is None:
+            pos = g.shield_knockback(x, y)               # enhanced mode: shield / invulnerable
         if pos is None:
             if os.environ.get("JPJ_DEBUG"):
                 print(f"CRUSHED at ({x},{y}) room {g.current_room}")
@@ -1170,7 +1199,10 @@ class Player:
     def fire(self, g):
         self.last_fire = g.tick
         self.fire_released = False
-        g.entities.append(Shot(g, self.x - 12 + 24 * self.direction, self.y + 2, self.direction))  # 0x0EDD
+        sx = self.x - 12 + 24 * self.direction
+        g.entities.append(Shot(g, sx, self.y + 2, self.direction))  # 0x0EDD
+        if self.pack == PACK_TWIN and g.enhanced:        # enhanced: a second shot trails the first
+            g.entities.append(Shot(g, sx - 6 * (2 * self.direction - 1), self.y - 6, self.direction))
         play_sound(SND_SHOOT)                            # 0x0EF8
 
     def update_explosions(self):
@@ -1178,11 +1210,18 @@ class Player:
             e.update()
         self.explosions[:] = [e for e in self.explosions if e.alive]
 
-    def draw(self, surface, sprites):
-        for idx in (self.body_sprite, self.flame_sprite):
-            if idx < len(sprites):
-                sp = sprites[idx]
-                surface.blit(sp["surf"], (int(self.x) + sp["x_off"], int(self.y) + sp["y_off"]))
+    def draw(self, surface, sprites, g=None):
+        x, y = int(self.x), int(self.y)
+        enhanced = g is not None and g.enhanced
+        # A broken shield's invulnerability flickers Joe on alternate frames.
+        if not (enhanced and g.tick < self.invuln_until and g.frame_no & 1):
+            for idx in (self.body_sprite, self.flame_sprite):
+                if idx < len(sprites):
+                    sp = sprites[idx]
+                    surface.blit(sp["surf"], (x + sp["x_off"], y + sp["y_off"]))
+        if enhanced and self.pack == PACK_SHIELD:
+            pal = g.levels[g.current_level]["pal"]
+            pygame.draw.ellipse(surface, pal[11 if g.frame_no & 2 else 3], (x - 19, y - 18, 39, 36), 1)
         for e in self.explosions:
             e.draw(surface, sprites)
 
@@ -1345,6 +1384,238 @@ class TimeoutBeam(Entity):
                     ts.set_colorkey(None)
 
 
+
+# ---------------------------------------------------------------------------
+# Enhanced mode — additions that are not in GAME.EXE. They reach the game only through two new
+# level-object types, and the three original levels contain neither, so the faithful port is
+# unchanged. `--classic` (or JPJ_CLASSIC=1) ignores both types in custom levels as well.
+#   22 pack   (tile, kind, var): a pickup Joe wears until he dies or finishes the level. Present
+#             while switch variable `var` is non-zero; taking it clears the variable, so it does
+#             not come back when the room is re-entered. One pack at a time: a new one replaces
+#             the old. kind 1 TWIN SHOT: a second shot trails every shot. kind 2 SHIELD: absorbs
+#             one death (any cause, including a crush, which throws Joe to the nearest free spot),
+#             then Joe is invulnerable for SHIELD_INVULN ticks.
+#   23 turret (tile, var, sides): a floor- or wall-mounted gun (collision shape 2, type 6, so
+#             touching it kills). Every 0x20 ticks it looks for Joe within TURRET_RANGE_Y px of
+#             its row on an allowed side (0 left, 1 right, 2 either) with no wall between them,
+#             and fires a bullet every TURRET_COOLDOWN ticks. Present while `var` is non-zero.
+#             Each shot of Joe's that lands takes one of TURRET_HP hit points; it then explodes
+#             like any enemy. Like the original enemies it comes back when the room is re-entered.
+# ---------------------------------------------------------------------------
+PACK_TWIN, PACK_SHIELD = 1, 2
+PACK_NAMES = {PACK_TWIN: "TWIN SHOT", PACK_SHIELD: "SHIELD"}
+SHIELD_INVULN = 1750             # ticks (~1.5 s) Joe cannot die after his shield takes a hit
+TURRET_HP = 3
+TURRET_COOLDOWN = 1400           # ticks between turret shots (~1.2 s)
+TURRET_RANGE_Y = 14              # px: Joe's centre must be this close to the turret's row
+TURRET_SHOT_INTERVAL = 12        # ticks per 2 px step (~194 px/s; Joe climbs at 116 px/s)
+
+# Pixel art for the new objects: one hex digit per pixel = palette index 0-15 (the EGA colours
+# shared by every level palette), "." = transparent.
+ART = {
+    "pack1": (                   # twin shot: a yellow pack with two gun barrels
+        "..888888888888",
+        ".8EEEEEEEEEEE8",
+        "8EE66666666EE8",
+        "8E6FFFFFFF88E8",
+        "8E6F777778E8E8",
+        "8EE66666666EE8",
+        "8E6FFFFFFF88E8",
+        "8E6F777778E8E8",
+        "8EE66666666EE8",
+        ".8EEEEEEEEEEE8",
+        "..888888888888",
+        "..8.........8.",
+    ),
+    "pack2": (                   # shield: a blue pack with a white ring
+        "..888888888888",
+        ".8BBBBBBBBBBB8",
+        "8BB333FFF333B8",
+        "8B33F33333F3B8",
+        "8B3F3BBBBB3F38",
+        "8B3F3BBBBB3F38",
+        "8B3F3BBBBB3F38",
+        "8B33F33333F3B8",
+        "8BB333FFF333B8",
+        ".8BBBBBBBBBBB8",
+        "..888888888888",
+        "..8.........8.",
+    ),
+    "turret": (                  # facing right; flipped for left
+        "....77777777....",
+        "...7FFFFFFFF7...",
+        "..7F88888888F7..",
+        "..7F8CC88888F888",
+        "..7F8CC88888F7FF",
+        "..7F88888888F7..",
+        "..7FFFFFFFFFF7..",
+        "...777777777....",
+        "..8888888888....",
+        ".877777777778...",
+        ".877777777778...",
+        "88888888888888..",
+    ),
+    "flash": (
+        ".EE.",
+        "EFFE",
+        "EFFE",
+        ".EE.",
+    ),
+    "bullet": (
+        ".CCCCCC.",
+        "CFFCCCCC",
+        "CCCCCC4C",
+        ".CCCC4C.",
+    ),
+}
+
+
+def make_art(rows, pal, flip=False, white=False):
+    h, w = len(rows), len(rows[0])
+    s = pygame.Surface((w, h), pygame.SRCALPHA)
+    for y, row in enumerate(rows):
+        for x, ch in enumerate(row):
+            if ch != ".":
+                s.set_at((w - 1 - x if flip else x, y), (*pal[15 if white else int(ch, 16)], 255))
+    return s
+
+
+def build_art(pal):
+    """The enhanced-mode surfaces in a level's palette."""
+    art = {name: make_art(rows, pal) for name, rows in ART.items()}
+    art["turret_l"] = make_art(ART["turret"], pal, flip=True)
+    art["turret_hit"] = make_art(ART["turret"], pal, white=True)
+    art["turret_hit_l"] = make_art(ART["turret"], pal, flip=True, white=True)
+    return art
+
+
+def enhanced_from_args(argv):
+    """Enhanced mode is on unless `--classic` or JPJ_CLASSIC=1 asks for the bare port."""
+    return "--classic" not in argv and os.environ.get("JPJ_CLASSIC", "0") != "1"
+
+
+class Pack(Entity):
+    """Object type 22. Checks the trigger shape 4 (the middle of its tile) for Joe's marker."""
+    interval = 0x20
+
+    def __init__(self, g, obj):
+        super().__init__(obj["x"], obj["y"], g.tick)
+        self.kind = obj["params"][1] if len(obj["params"]) > 1 else PACK_TWIN
+        self.var = obj["params"][2] if len(obj["params"]) > 2 else 0
+        self.art = g.art.get("pack%d" % self.kind, g.art["pack1"])
+        self.room = g.current_room
+
+    def update(self, g):
+        if g.death is None and cb_check(g.cbm, 4, self.x >> 1, self.y >> 1, 0)[1][CT_JOE]:
+            g.player.pack = self.kind
+            g.switch_state[self.var] = 0
+            play_sound(SND_PICKUP)
+            self.alive = False
+
+    def draw(self, surface, sprites, frame):
+        bob = (0, 0, -1, -2, -2, -2, -1, 0)[(frame >> 2) & 7]
+        surface.blit(self.art, (self.x + 1, self.y + bob))
+
+
+class TurretShot(Entity):
+    """A turret's bullet: 2 px per update along its row. Hitting Joe's marker restores the
+    backup under shape 1, which is how every original hazard kills him (0x0CCC), so his shield
+    sees it like any other death. Anything else solid stops it with a wall explosion."""
+    interval = TURRET_SHOT_INTERVAL
+
+    def __init__(self, g, x, y, direction):
+        super().__init__(x, y, g.tick)
+        self.speed = direction * 4 - 2
+        self.art = g.art["bullet"]
+        self.room = g.current_room
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        nx = self.x + self.speed
+        if g.exit_room(self.room, nx, self.y) is not None:
+            self.alive = False
+            return
+        self.x = nx
+        hx, hy = nx >> 1, self.y >> 1
+        total, hist = cb_check(cbm, 1, hx, hy, 0)
+        if total == 0:
+            return
+        if hist[CT_JOE]:
+            cb_restore(cbm, backup, 1, hx, hy)
+        g.player.explosions.append(Explosion(nx, self.y))
+        self.alive = False
+
+    def draw(self, surface, sprites, frame):
+        surface.blit(self.art, (self.x - 4, self.y - 2))
+
+
+class Turret(Entity):
+    """Object type 23. (x, y) is the centre of its 16x12 body, one tile."""
+    interval = 0x20
+
+    def __init__(self, g, obj):
+        super().__init__(obj["x"] + 8, obj["y"] + 6, g.tick)
+        self.sides = obj["params"][2] if len(obj["params"]) > 2 else 2
+        self.facing = 0 if self.sides == 0 else 1
+        self.hp = TURRET_HP
+        self.hit_flash = 0          # frames left of the white "hit" look
+        self.muzzle = 0             # frames left of the muzzle flash
+        self.fired_at = -1e9
+        self.room = g.current_room
+        self.art = g.art
+        cb_write(g.cbm, 2, self.x >> 1, self.y >> 1, CT_ENEMY)
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        hx, hy = self.x >> 1, self.y >> 1
+        total, hist = cb_check(cbm, 2, hx, hy, CT_ENEMY)
+        if total and hist[CT_JOE] != total:          # not just Joe's marker: a shot erased us
+            self.hp -= 1
+            self.hit_flash = 6
+            if self.hp <= 0:
+                cb_restore_if(cbm, backup, 2, hx, hy, CT_ENEMY)
+                g.entities.append(EnemyExplosion(g, self.x, self.y, None))
+                self.alive = False
+                return
+        cb_write(cbm, 2, hx, hy, CT_ENEMY)             # Joe overlapping it dies at his next check
+        if g.death is not None or g.beam_in is not None or g.beam_out is not None:
+            return
+        jx, jy = int(g.player.x), int(g.player.y)
+        if abs(jy - self.y) > TURRET_RANGE_Y or abs(jx - self.x) < 16:
+            return
+        side = 1 if jx > self.x else 0
+        if self.sides != 2 and side != self.sides:
+            return
+        self.facing = side
+        if g.tick - self.fired_at < TURRET_COOLDOWN or not self.line_of_sight(cbm, hx, hy, jx >> 1):
+            return
+        self.fired_at = g.tick
+        self.muzzle = 4
+        g.entities.append(TurretShot(g, self.x + (12 if side else -12), self.y, side))
+        play_sound(SND_TURRET)
+
+    @staticmethod
+    def line_of_sight(cbm, hx, hy, tx):
+        """No wall byte on the turret's row between its barrel and Joe's column."""
+        step = 1 if tx > hx else -1
+        for sx in range(hx + 4 * step, tx, step):
+            if 0 <= sx < HALF_W and cbm[hy * HALF_W + sx] == CT_WALL:
+                return False
+        return True
+
+    def draw(self, surface, sprites, frame):
+        name = "turret_hit" if self.hit_flash else "turret"
+        if self.facing == 0:
+            name += "_l"
+        surface.blit(self.art[name], (self.x - 8, self.y - 6))
+        if self.hit_flash:
+            self.hit_flash -= 1
+        if self.muzzle:
+            self.muzzle -= 1
+            fx = self.x + 8 if self.facing else self.x - 12
+            surface.blit(self.art["flash"], (fx, self.y - 4))
+
+
 class JetPackJoe:
     def __init__(self):
         pygame.init()
@@ -1378,6 +1649,7 @@ class JetPackJoe:
         self.goto_buf = None     # digits typed after G (debug "go to room"), None when inactive
         self.enemies_enabled = "--no-enemies" not in sys.argv and os.environ.get("JPJ_ENEMIES", "1") != "0"
         self.anims_enabled = anims_enabled_from_args(sys.argv)
+        self.enhanced = enhanced_from_args(sys.argv)   # packs and turrets (object types 22/23)
         self.cutscene = None      # a Cutscene while one plays; the game is frozen underneath
         self.cutscene_then = None
         self.fade = None          # level palette fade: {"t0", "dir": +1 in / -1 out, "then"}
@@ -1395,6 +1667,7 @@ class JetPackJoe:
                     s.set_at((x, y), pal[self.blk[off + y * TILE_W + x]])
             self.tile_surfs.append(s)
         self.sprites = decode_sprites(self.sp_data, pal)
+        self.art = build_art(pal)                        # enhanced-mode graphics in this palette
         # Build per-row opaque pixel masks for sprite collision
         for idx, sp in enumerate(self.sprites):
             surf = sp["surf"]
@@ -1539,7 +1812,7 @@ class JetPackJoe:
             else:
                 self.room_headers.append(b'\xff' * 8)
 
-    OBJ_PARAMS = {0:0,1:1,2:1,3:1,4:1,5:3,6:2,7:2,8:2,9:2,10:3,11:1,12:1,13:2,14:2,15:2,16:2,17:3,18:3,19:3,20:1,21:0,22:0,23:0}
+    OBJ_PARAMS = {0:0,1:1,2:1,3:1,4:1,5:3,6:2,7:2,8:2,9:2,10:3,11:1,12:1,13:2,14:2,15:2,16:2,17:3,18:3,19:3,20:1,21:0,22:3,23:3}
 
     def load_room_objects(self):
         """Parse objects from LVxx.DAT for each room."""
@@ -1552,6 +1825,11 @@ class JetPackJoe:
             off = offsets[room]
             pos = off + 8  # skip 8-byte header
             objects = []
+            # Entry 68 is the level trailer and 69 is empty; unused rooms (L1 16-67) share the
+            # trailer's offset. None of them is a room, so none gets an object list.
+            if room >= 68 or (num_entries > 68 and off == offsets[68]):
+                self.room_objects[room] = objects
+                continue
             while pos + 1 < len(data):
                 obj_type = struct.unpack_from('<H', data, pos)[0]
                 pos += 2
@@ -2082,7 +2360,7 @@ class JetPackJoe:
         self.beam_in = self.beam_out = None
         self.player.next_time = self.tick            # no beam-in wait when debugging
         self.death = None
-        self.entities = [e for e in self.entities if not isinstance(e, Shot)]
+        self.entities = [e for e in self.entities if not isinstance(e, (Shot, TurretShot))]
         self.player.explosions.clear()
         cbm = self.get_collision_bitmap(room)[0]
         px, py = int(self.player.x), int(self.player.y)
@@ -2120,8 +2398,13 @@ class JetPackJoe:
             self.init_room_object(obj)
             if t == 10 and obj.get("disappear", -1) < 0:
                 play_sound(SND_HELP)                      # 0x1406: captive init
-            if t in (11, 12, 14, 20) and not self.enemies_enabled:
+            if t in (11, 12, 14, 20, 23) and not self.enemies_enabled:
                 continue                                  # debug: --no-enemies / E key
+            if t in (22, 23):                             # enhanced mode: pack / turret
+                var = obj["params"][1 if t == 23 else 2] if len(obj["params"]) > 2 else 0
+                if self.enhanced and self.switch_state[var] != 0:
+                    self.entities.append((Turret if t == 23 else Pack)(self, obj))
+                continue
             if t == 14:
                 var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
                 if self.switch_state[var_id] != 0:        # 0x232E: skipped if its variable is 0
@@ -2185,9 +2468,46 @@ class JetPackJoe:
         cb_write(cbm, 0, int(self.player.x) >> 1, int(self.player.y) >> 1, CT_JOE)
         self.joe_marked = cbm
 
+    def shield_save(self):
+        """Enhanced mode: True if a death is absorbed, by a shield (consumed, then SHIELD_INVULN
+        ticks of invulnerability) or by that invulnerability itself."""
+        p = self.player
+        if self.tick < p.invuln_until:
+            return True
+        if p.pack == PACK_SHIELD:
+            p.pack = None
+            p.invuln_until = self.tick + SHIELD_INVULN
+            p.explosions.append(Explosion(int(p.x), int(p.y) - 10))    # the shield shatters
+            return True
+        return False
+
+    def find_clear_near(self, x, y, radius):
+        """The nearest position within `radius` px where Joe's shape is clear, or None."""
+        cbm = self.get_collision_bitmap(self.current_room)[0]
+        best = None
+        for r in range(2, radius + 1, 2):
+            for d in range(-r, r + 1, 2):
+                for cx, cy in ((x + d, y - r), (x + d, y + r), (x - r, y + d), (x + r, y + d)):
+                    if 8 <= cx < SCREEN_W - 8 and 8 <= cy < SCREEN_H - 8 and Player._clear(cbm, cx, cy):
+                        dist = (cx - x) ** 2 + (cy - y) ** 2
+                        if best is None or dist < best[0]:
+                            best = (dist, cx, cy)
+            if best is not None:
+                return best[1], best[2]
+        return None
+
+    def shield_knockback(self, x, y):
+        """Enhanced mode: a crush that the shield absorbs throws Joe to the nearest free spot
+        (or leaves him where he is until whatever overlaps him has gone). None = no shield."""
+        if not self.enhanced or not self.shield_save():
+            return None
+        return self.find_clear_near(x, y, 40) or (x, y)
+
     def start_death(self):
         """GAME.EXE 0x0F05: Joe's death sequence. First step after 80 ticks, then every 70."""
         if self.death is not None:
+            return
+        if self.enhanced and self.shield_save():
             return
         self.death = {"frame": 0, "next": self.tick + 80, "sprite": None, "hidden": False}
         self.player.vy = 0
@@ -2448,7 +2768,7 @@ class JetPackJoe:
                     self.screen.blit(sp["surf"], (int(self.player.x) + sp["x_off"],
                                                   int(self.player.y) + sp["y_off"]))
                 else:
-                    self.player.draw(self.screen, self.sprites)
+                    self.player.draw(self.screen, self.sprites, self)
         for e in self.entities:
             if isinstance(e, Bird):
                 e.draw_laser(self.screen, self.sprites, self.frame_no)
@@ -2482,16 +2802,20 @@ class JetPackJoe:
         pal = self.levels[self.current_level]["pal"]
         time_s = f"{max(0, min(999, self.player.time)):03d}"
         middle = "JET PACK JOE DEMO"
-        debug = None
+        debug = pack = None
         if self.goto_buf is not None:
             debug = f"GO TO ROOM: {self.goto_buf}_".ljust(17)
         elif not self.enemies_enabled:
             debug = "   NO ENEMIES    "
-        line = f"TIME: {time_s}   {debug or middle}   ROOM: {self.current_room:02d}"
+        elif self.enhanced and self.player.pack in PACK_NAMES:      # enhanced: the pack slot
+            pack = f"PACK: {PACK_NAMES[self.player.pack]}".ljust(17)
+        line = f"TIME: {time_s}   {debug or pack or middle}   ROOM: {self.current_room:02d}"
         draw_text8(self.screen, 0, bar_y, line, pal[7])
         draw_text8(self.screen, 6 * 8, bar_y, time_s, pal[10])
         if debug:
             draw_text8(self.screen, 12 * 8, bar_y, debug, (255, 255, 0))
+        elif pack:
+            draw_text8(self.screen, 12 * 8, bar_y, pack, pal[11])
 
 
 def parse_start_arg(argv):

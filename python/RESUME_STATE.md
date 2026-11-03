@@ -3109,7 +3109,7 @@ Tests: `tests/test_joe.py`.
 
 ### Standalone test level (2026-11-03)
 
-`python/tools/build_test_level.py` writes `python/TESTLEVEL.JPL`, a seven-room level with every
+`python/tools/build_test_level.py` writes `python/TESTLEVEL.JPL`, an eight-room level with every
 object type, built from tile stamps copied out of MP11/12/13 so each object has its real
 surroundings (door rails, cage/teleporter frames, generator bases, emitters). Load it with
 `python3 jet_pack_joe.py --level TESTLEVEL.JPL` (it becomes level 4: key **4**, `--start 4:N`).
@@ -3121,8 +3121,9 @@ Rooms: 0 fans 1-4 + wall-switch door + toggle-pad door (beam-in here); 1 vertica
 over an exit chamber, field across the hole cols 16-18) + right switch, three glow balls on the
 ceiling + toggle pad in the chamber; 2 two cages (the
 level's captives) + a plate pair; 3 ball/bird/orb generators; 4 sentry + two doors whose
-sensor pads close the door behind you; 5 three teleporters (one to room 6, a same-room pair);
-6 teleporter back. Exits run left/right along the floor. Variables that start OFF (trailer
+sensor pads close the door behind you; 7 enhanced mode: twin-shot pack, floor turret, shield
+pack (between rooms 4 and 5, added 2026-11-03); 5 three teleporters (one to room 6, a same-room
+pair); 6 teleporter back. Exits run left/right along the floor. Variables that start OFF (trailer
 off-list): 10, 11, 31, 32 (room 0 doors), 18, 19 (plates), 23 (sensor source), 33, 34.
 Layout lessons: wall switches trigger through shape 4 at rows +2..3 of their tile and their
 tile carries half a wall (CB00 shape 35/34), so at walking height they must sit at row 13;
@@ -3248,3 +3249,55 @@ Tests: `tests/test_scheduler.py` (intervals, door 14 × 0x59, fan cadence, plate
 steps, cage beam cadence and late captive count, beam-in delay and Joe release). The cage
 tests' helper `touch_cage` hovers beside a cage at wall height and pushes into it; door
 waits in the switch/level tests were lengthened to the real opening time. 64 tests pass.
+
+### Enhanced mode: packs, shield, twin shot, turret (2026-11-03)
+
+Cam asked to make the game better on the enemy/weapon/pack side and chose the starting set
+from my list: a pack pickup with two packs (twin shot, shield) and one new enemy (the turret).
+None of this is in GAME.EXE. It reaches the game only through two new level-object types, and
+`tests/test_enhanced.py::test_original_levels_contain_no_enhanced_objects` checks that no room
+of levels 1-3 contains either, so the faithful port plays exactly as before. `--classic` (or
+`JPJ_CLASSIC=1`) ignores both types in custom levels too (`JetPackJoe.enhanced`).
+
+- **Type 22 pack** `(tile, kind, var)`: entity `Pack`, interval 0x20, CHECK shape 4 (the
+  middle of its tile) for Joe's marker. Present while `switch_state[var] != 0`; taking it
+  clears the var, so it does not return on re-entry. One pack at a time (`Player.pack`), lost
+  with the Player object on death or level change. kind 1 **TWIN SHOT**: `Player.fire` adds a
+  second shot 6 px behind and 8 px above the first. kind 2 **SHIELD**: `JetPackJoe.shield_save`
+  absorbs one death from any cause (`start_death`) and then grants `SHIELD_INVULN` = 1750
+  ticks of invulnerability; a crush (`Player._unstick` failing) goes through
+  `shield_knockback`, which moves Joe to the nearest clear spot within 40 px or leaves him
+  until the overlap clears. Joe flickers while invulnerable; a cyan ring shows the shield.
+- **Type 23 turret** `(tile, var, sides)`: entity `Turret`, one tile, collision shape 2 as type
+  6 (touching it kills), interval 0x20. Present while `var != 0`; `--no-enemies` / E hides it.
+  It fires `TurretShot` (2 px per 12 ticks along its row, no collision bytes of its own) when
+  Joe is within `TURRET_RANGE_Y` = 14 px of its row, at least 16 px away horizontally, on an
+  allowed side (0 left, 1 right, 2 either) and no wall byte lies on the row between them;
+  `TURRET_COOLDOWN` = 1400 ticks between shots; it never fires while Joe is dead or beaming.
+  The bullet kills the original way: `cb_restore` under shape 1 wipes Joe's marker and
+  0x0CCC's check finds the hole. A hit is anything but Joe's marker intruding on the turret's
+  own bytes (a shot's erase); `TURRET_HP` = 3 hits → `EnemyExplosion`, bytes restored. Like
+  the original enemies it comes back when the room is re-entered.
+- Graphics are small palette-index pixel maps (`ART`, `build_art` per level palette, EGA
+  colours 0-15 are the same in PL11/12/13): two packs, turret (flipped for left, white when
+  hit), muzzle flash, bullet. Sounds: `SND_PICKUP` (three rising square-wave notes) and
+  `SND_TURRET` (decaying noise) are synthesized into the mixer's 6-bit format and appended to
+  the bank as ids 5 and 6; the DS00.DAT samples are untouched.
+- Status bar: with a pack held the middle text becomes `PACK: TWIN SHOT` / `PACK: SHIELD` in
+  palette 11 (cyan); debug prompts still take precedence.
+- Parsing fix found on the way: in LV11 the unused rooms 16-67 share the trailer's entry
+  offset, so `load_room_objects` used to give them junk objects of whatever types the trailer
+  words happened to spell (4, 17, now 22). Entries at or past 68 and entries aliasing the
+  trailer offset now get an empty list.
+- Test level room 7 (between 4 and 5): twin-shot pack at col 3, turret on the floor at col 10
+  firing both ways (vars 24/25/26, all default ON), shield pack at col 16. Joe either flies
+  over the turret or shoots it three times.
+- Tests: `tests/test_enhanced.py` (10: originals untouched, room contents, classic flag,
+  pickup remembered across re-entry, twin shot count, shield absorbs one ball death then
+  breaks, turret fires in-row and its bullet kills, no fire out of row, three hits destroy it,
+  status bar slot). `test_level_file.py` covers room 7's reachability; `test_sound.py` expects
+  seven samples. 74 tests pass.
+
+Ideas not built yet (from the same list): bounce/charge/homing shots, bombs, afterburner,
+hover, phase, cage remote, freeze, time cell; crawler, seeker, splitter, armoured, thief,
+jailer, bosses; generators that react to the timer or can be destroyed; score.

@@ -45,11 +45,12 @@ class _Keys:
 
 
 class Driver:
-    def __init__(self, seed=1, level_file=None, anims=False):
+    def __init__(self, seed=1, level_file=None, anims=False, enhanced=True):
         random.seed(seed)
         self.g = J.JetPackJoe()
         self.g.clock = _NoClock()
         self.g.anims_enabled = anims            # cutscenes freeze the game for seconds
+        self.g.enhanced = enhanced              # packs / turrets (object types 22/23)
         self.frame = 0
         if level_file:
             self.g.levels.append(J.load_level_file(level_file))

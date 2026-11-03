@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build TESTLEVEL.JPL: a standalone seven-room level with every object type, for testing.
+"""Build TESTLEVEL.JPL: a standalone eight-room level with every object type, for testing.
 
 Load it with:   python3 jet_pack_joe.py --level TESTLEVEL.JPL        (it becomes level 4)
 
@@ -9,6 +9,7 @@ Rooms (all exits are left/right along the floor unless noted):
   2  two cages (rescue both to finish) and a pair of crushing plates
   3  generators: balls, birds, orbs
   4  sentry, two doors with sensor pads that close the door behind you
+  7  enhanced mode: a twin-shot pack, a turret on the floor, a shield pack
   5  teleporters: one to room 6, a same-room pair      6  teleporter back to room 5
 Visuals are stamped from the real levels (MP11/12/13) so every object looks as it should.
 File format: b"JPL1", u32 map/lv/pal sizes, map (MPxx layout), level data (LVxx layout),
@@ -111,7 +112,7 @@ class Room:
 
 
 def build():
-    rooms = [Room() for _ in range(7)]
+    rooms = [Room() for _ in range(8)]
 
     # ---- Room 0: start, fans, doors ----
     r = rooms[0]
@@ -184,17 +185,28 @@ def build():
     r = rooms[4]
     r.frame(left_exit=True, right_exit=True)
     r.exits[6] = r.exits[7] = 3
-    r.exits[2] = r.exits[3] = 5
+    r.exits[2] = r.exits[3] = 7
     r.obj(14, 10, 3, 20)                     # sentry (var 20 on → present)
     r.pillar_door(6, 21, 33)                 # door, open while var 21 is on
     r.obj(18, 8, 14, 21, 23)                 # pad: var 21 := var 23 (0) → closes door behind you
     r.pillar_door(12, 22, 34)
     r.obj(18, 14, 14, 22, 23)
 
+    # ---- Room 7: enhanced mode (packs and a turret) ----
+    # The turret stands on the floor at walking height, so Joe must fly over it or shoot it
+    # three times; it fires at him whenever he is level with it on either side.
+    r = rooms[7]
+    r.frame(left_exit=True, right_exit=True)
+    r.exits[6] = r.exits[7] = 4
+    r.exits[2] = r.exits[3] = 5
+    r.obj(22, 3, 13, 1, 24)                  # twin-shot pack (kind 1), gone once var 24 is 0
+    r.obj(23, 10, 14, 26, 2)                 # turret, present while var 26 is on, fires both ways
+    r.obj(22, 16, 13, 2, 25)                 # shield pack (kind 2), var 25
+
     # ---- Rooms 5 and 6: teleporters ----
     r = rooms[5]
     r.frame(left_exit=True)
-    r.exits[6] = r.exits[7] = 4
+    r.exits[6] = r.exits[7] = 7
     t1 = r.stamp("tele", 3, 10)
     t2 = r.stamp("tele", 9, 10)
     t3 = r.stamp("tele", 15, 10)

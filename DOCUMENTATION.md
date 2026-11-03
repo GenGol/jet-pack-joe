@@ -506,3 +506,9 @@ by disassembling GAME.EXE routines (EXPAND_MAP, BLOCK_TO_XY, DRAW_SPRITE).
   found under him — see python/RESUME_STATE.md, Session 6, for the full enemy AI decode.
 - Animations: THUMBS_UP_ANIM, DEATH_ANIM, TITLE_ANIM, CREDITS_ANIM
 - Sound: Internal speaker, Covox Speech Thing, Covox Sound Master II drivers
+
+**Port additions (enhanced mode, not in GAME.EXE):** two extra level-object types that the
+original levels never use, so they only appear in custom `.JPL` levels: type 22 pack
+`(tile, kind, var)` with kind 1 twin shot / 2 shield, and type 23 turret `(tile, var, sides)`.
+`python3 jet_pack_joe.py --classic` ignores them. Details: python/RESUME_STATE.md, "Enhanced
+mode".
