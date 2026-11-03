@@ -3116,13 +3116,21 @@ surroundings (door rails, cage/teleporter frames, generator bases, emitters). Lo
 File format: `JPL1`, u32 map/lv/pal sizes, MPxx map, LVxx level data (70 entries, trailer in
 entry 68), 768-byte palette (PL11), name. Loader: `load_level_file`, `--level FILE`.
 
-Rooms: 0 fans 1-4 + wall-switch door + toggle-pad door (beam-in here); 1 vertical field +
-left switch, horizontal field + right switch, three glow balls + toggle pad; 2 two cages (the
+Rooms: 0 fans 1-4 + wall-switch door + toggle-pad door (beam-in here); 1 vertical field gate
+(pillar col 8, field fills the gap rows 11-14) + left switch, horizontal field gate (slab row 9
+over an exit chamber, field across the hole cols 16-18) + right switch, three glow balls on the
+ceiling + toggle pad in the chamber; 2 two cages (the
 level's captives) + a plate pair; 3 ball/bird/orb generators; 4 sentry + two doors whose
 sensor pads close the door behind you; 5 three teleporters (one to room 6, a same-room pair);
 6 teleporter back. Exits run left/right along the floor. Variables that start OFF (trailer
 off-list): 10, 11, 31, 32 (room 0 doors), 18, 19 (plates), 23 (sensor source), 33, 34.
 Layout lessons: wall switches trigger through shape 4 at rows +2..3 of their tile and their
 tile carries half a wall (CB00 shape 35/34), so at walking height they must sit at row 13;
-in the real levels they are placed at flying height. Tests: `tests/test_level_file.py`
-(loads, every room runs, a scripted walkthrough of room 0 with hops over low blocks).
+in the real levels they are placed at flying height. Joe's collision shape is 28x30 px, so
+any pocket he must stand or rise in needs two free tiles (the first room 1 trapped him between
+the left exit and a block one tile in: Cam reported "after entering room 1 I can't go anywhere",
+2026-11-03). Door pillars reach the ceiling, otherwise a door is just flown over. A left switch
+(type 7) is pressed from its right, a right switch from its left: the trigger is the tile's
+middle (half-res +2..5, +2..3) behind the half wall. Tests: `tests/test_level_file.py` (loads,
+every room runs, flood-fill reachability of every room in each switch state so gates provably
+block and open, scripted walkthroughs of rooms 0 and 1 with hops and hovering).

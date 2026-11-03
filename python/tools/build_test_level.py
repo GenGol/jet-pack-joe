@@ -5,7 +5,7 @@ Load it with:   python3 jet_pack_joe.py --level TESTLEVEL.JPL        (it becomes
 
 Rooms (all exits are left/right along the floor unless noted):
   0  start: four fans (types 1-4), a door opened by a wall switch, a door opened by a toggle pad
-  1  fields: vertical field + its switch, horizontal field + its switch, glow balls + toggle pad
+  1  fields: vertical field gate + its switch, horizontal field gate + its switch, glow balls + toggle pad
   2  two cages (rescue both to finish) and a pair of crushing plates
   3  generators: balls, birds, orbs
   4  sentry, two doors with sensor pads that close the door behind you
@@ -103,8 +103,9 @@ class Room:
                 self.put(COLS - 1, r, 282, 1, 255)
 
     def pillar_door(self, c, switch_var, state_var):
-        """A door hanging under a pillar: pillar rows 5-9, door rows 10-13 (object tile row 10)."""
-        self.box(c, 5, c, 9)
+        """A door hanging under a pillar that reaches the ceiling (so it cannot be flown over):
+        pillar rows 1-9, door rows 10-13 (object tile row 10), one free row under it."""
+        self.box(c, 1, c, 9)
         self.stamp("door", c, 10)
         self.obj(5, c, 10, switch_var, state_var)
 
@@ -129,24 +130,29 @@ def build():
     BEAM_TILE = 12 * COLS + 2                # Joe beams in at col 2, row 12
 
     # ---- Room 1: fields and glow balls ----
+    # Joe is 28x30 px: every pocket he must stand or rise in is at least two tiles wide,
+    # and each field spans a gap he has to pass through, as in the original levels.
     r = rooms[1]
     r.frame(left_exit=True, right_exit=True)
     r.exits[6] = r.exits[7] = 0
     r.exits[2] = r.exits[3] = 2
-    r.stamp("vfield", 5, 2)
-    r.obj(8, 5, 2, 13)                       # vertical field (var 13 on → active)
-    r.box(2, 12, 2, 14)
-    r.stamp("lswitch", 3, 13)
-    r.obj(7, 3, 13, 13)                      # left switch toggles var 13
-    r.box(8, 12, 8, 14)
-    r.stamp("rswitch", 7, 13)
-    r.obj(6, 7, 13, 14)                      # right switch toggles var 14
-    r.stamp("hfield", 10, 12)
-    r.obj(9, 10, 12, 14)                     # horizontal field (var 14)
-    for c, rr in ((13, 5), (16, 5), (13, 9)):
-        r.stamp("glow", c, rr)
-        r.obj(13, c, rr, 15)                 # glow balls (var 15)
-    r.obj(17, 17, 14, 15, 15)                # toggle pad flips var 15
+    r.box(4, 12, 4, 14)                      # wall block carrying the left switch
+    r.stamp("lswitch", 5, 13)
+    r.obj(7, 5, 13, 13)                      # left switch toggles var 13
+    r.box(8, 1, 8, 9)                        # pillar; the emitter hangs under it at row 10
+    r.stamp("vfield", 8, 11)                 # vertical field fills the gap rows 11-14
+    r.obj(8, 8, 11, 13)                      # (var 13 on -> active)
+    r.box(12, 12, 12, 14)                    # wall block carrying the right switch
+    r.stamp("rswitch", 11, 13)
+    r.obj(6, 11, 13, 14)                     # right switch toggles var 14
+    r.box(14, 9, 14, 14)                     # wall from the slab to the floor
+    r.stamp("hfield", 16, 9)                 # emitter at col 15 is part of the slab;
+    r.obj(9, 16, 9, 14)                      # the field spans the hole cols 16-18 (var 14)
+    for c in (10, 13, 16):
+        r.stamp("glow", c, 1)
+        r.obj(13, c, 1, 15)                  # glow balls (var 15) hug the ceiling; Joe flies
+                                             # under them (rows 3-8) on his way over the slab
+    r.obj(17, 17, 14, 15, 15)                # toggle pad in the exit chamber flips var 15
 
     # ---- Room 2: cages and plates ----
     r = rooms[2]
