@@ -3363,7 +3363,7 @@ drops the pack with the last round. New key **X** (`INP_USE`, harness key "use")
   along (no catch-up after); `update_room_objects` does the same for plates (15/16). Status bar
   shows "FROZEN n.n" / "PHASE n.n" while the slot is empty.
 - `set_level` resets both timers. Classic mode ignores all of it (and the X key).
-- Test level: time cell room 0 (3,13); phase room 1 (2,13); cage remote room 2 (8,13); bombs
+- Test level: time cell room 0 (3,13); phase room 1 (2,13); cage remote room 2 (2,13); bombs
   room 3 (13,13); freeze room 4 (2,13); afterburner (7,14) and hover (13,14) room 5; bounce
   (6,13) and homing (13,13) room 7. Vars 40-48. `tests/test_packs.py` (17 tests); the level
   tests check every pack is touchable. Harness `place()` now lifts Joe's old marker.

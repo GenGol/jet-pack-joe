@@ -170,7 +170,7 @@ def build():
     r.obj(15, 5, 9, 18)                      # left plate (var 18 = its phase)
     r.box(13, 9, 13, 13)                     # right plate's wall
     r.obj(16, 12, 9, 19)                     # right plate (var 19)
-    r.obj(22, 8, 13, 11, 42)                 # enhanced: cage remote (kind 11), frees the nearest captive
+    r.obj(22, 2, 13, 11, 42)                 # enhanced: cage remote (kind 11) by the entry, left of the plates' sweep
 
     # ---- Room 3: generators ----
     r = rooms[3]
