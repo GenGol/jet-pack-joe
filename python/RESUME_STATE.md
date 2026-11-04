@@ -3329,6 +3329,20 @@ probably frame-rate drift: game time advances per rendered frame). Changes:
   `test_classic_mode_resumes_the_parked_shot_like_the_original`; `test_follow.py`'s sweep
   test now checks the once-per-second granularity.
 
+### Turret bullets kill sentries (2026-11-03, enhanced only)
+
+Cam: "I would like the turret bullet to kill the sentry if it is in the path of the bullet."
+The sentry's footprint is written as CT_WALL (0x23EA), identical to the room's walls, so the
+bullet cannot tell it from a wall through the collision bitmap. `TurretShot.update` therefore
+checks, when its shape-1 cells hit CT_WALL, whether a live, visible `Sentry` in the room has a
+footprint cell (`Sentry.cells()`, shape 19 + facing at its position) in common with the
+bullet's cells, and calls `Sentry.kill(g)`: hide (restore its footprint), alive = False, and
+an `EnemyExplosion` over sprite 39 + facing (which plays SND_EXPLOSION). The variable stays 0,
+so the sentry does not come back when Joe re-enters the room; a sentry killed this way is gone
+for the level. Joe's own shots still cannot hurt it (faithful to GAME.EXE: the sentry never
+checks for intrusions). Tests: `test_turret_bullet_kills_a_sentry_in_its_path`,
+`test_turret_bullet_still_kills_joe_when_a_sentry_is_elsewhere`. 81 tests pass.
+
 ### Sentry keeps its slot; turret bullets cross rooms (2026-11-03)
 
 Cam asked whether the sentry in test-level room 4 should follow him out, and then noticed it

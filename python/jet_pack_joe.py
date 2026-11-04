@@ -474,6 +474,20 @@ class Sentry(Entity):
     def destroy(self, g):
         g.switch_state[self.var] = 0xFF                                      # 0x23A5
 
+    def cells(self):
+        """Half-res cells of its collision footprint (shape 19 + facing at its position)."""
+        hx, hy = self.x >> 1, self.y >> 1
+        return {(hx + start + i, hy + row)
+                for row, start, length in sh_shape(19 + self.facing) for i in range(length)}
+
+    def kill(self, g):
+        """Enhanced mode only: a turret bullet destroys it. Its footprint is erased and the
+        usual enemy explosion plays over its last sprite. The variable stays 0, so it does not
+        come back when Joe re-enters the room."""
+        self.hide(g)
+        self.alive = False
+        g.entities.append(EnemyExplosion(g, self.x, self.y, 39 + self.facing))
+
     def update(self, g):
         cbm, backup = g.cbm, g.cbm_bak
         x, y = self.x, self.y
@@ -1569,8 +1583,10 @@ class Pack(Entity):
 class TurretShot(Entity):
     """A turret's bullet: 2 px per update along its row. Hitting Joe's marker restores the
     backup under shape 1, which is how every original hazard kills him (0x0CCC), so his shield
-    sees it like any other death. Anything else solid stops it with a wall explosion. Like
-    Joe's shots it is mobile: it crosses room edges and follows Joe into the next room."""
+    sees it like any other death. A sentry in its path (the sentry writes CT_WALL like a wall,
+    so it is told apart by position) is destroyed. Anything else solid stops it with a wall
+    explosion. Like Joe's shots it is mobile: it crosses room edges and follows Joe into the
+    next room."""
     interval = TURRET_SHOT_INTERVAL
     mobile = True
 
@@ -1592,6 +1608,12 @@ class TurretShot(Entity):
             return
         if hist[CT_JOE]:
             cb_restore(cbm, backup, 1, hx, hy)
+        if hist[CT_WALL]:
+            mine = {(hx + start + i, hy + row) for row, start, length in sh_shape(1)
+                    for i in range(length)}
+            for e in g.entities:
+                if isinstance(e, Sentry) and e.alive and e.visible == 1 and e.cells() & mine:
+                    e.kill(g)
         if self.visible == 1 and self.room == g.current_room:
             g.player.explosions.append(Explosion(nx, self.y))
         self.alive = False

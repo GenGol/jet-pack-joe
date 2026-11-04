@@ -239,6 +239,41 @@ def test_sentry_waits_where_it_was_and_respawns_after_the_sweep():
     assert g.switch_state[fresh[0].var] == 0
 
 
+def test_turret_bullet_kills_a_sentry_in_its_path():
+    """Cam: a sentry in the bullet's path should die. The sentry's footprint is CT_WALL, the
+    same as the room's walls, so the bullet tells it apart by position. A sentry is dropped in
+    the turret's row with a bullet flying at it; the sentry dies with the enemy explosion, its
+    footprint is erased, and its variable stays 0 so it does not come back."""
+    d, g = armoury(enemies=False)
+    hover(d, g, 30, 60)                                   # well clear of the turret's row
+    sentry = J.Sentry(g, 60, TURRET_Y - 2, 30)
+    g.entities.append(sentry)
+    cells = sentry.cells()
+    assert all(g.cbm[hy * J.HALF_W + hx] == J.CT_WALL for hx, hy in cells)
+    g.entities.append(J.TurretShot(g, 150, TURRET_Y - 1, 0))
+    d.run(200, until=lambda g: not sentry.alive or not d.entities(J.TurretShot))
+    assert not sentry.alive, "the bullet should have destroyed the sentry"
+    assert d.entities(J.EnemyExplosion), "enemy explosion where it was"
+    assert not d.entities(J.TurretShot), "the bullet is spent"
+    assert all(g.cbm[hy * J.HALF_W + hx] == g.cbm_bak[hy * J.HALF_W + hx] for hx, hy in cells), \
+        "its footprint is erased"
+    assert g.switch_state[30] == 0
+    d.run(60, keys={"left"}, until=lambda g: g.current_room == 4)
+    d.run(60, keys={"right"}, until=lambda g: g.current_room == 7)
+    assert g.current_room == 7 and not d.entities(J.Sentry), "it stays dead"
+    assert g.death is None
+
+
+def test_turret_bullet_still_kills_joe_when_a_sentry_is_elsewhere():
+    """The sentry check must not swallow the hit on Joe or on a wall."""
+    d, g = armoury(enemies=False)
+    d.place(60, FLOOR_Y)
+    g.entities.append(J.Sentry(g, 250, 60, 30))          # far from the bullet's row
+    g.entities.append(J.TurretShot(g, 150, TURRET_Y - 1, 0))
+    d.run(200, until=lambda g: g.death is not None)
+    assert g.death is not None and d.entities(J.Sentry)[0].alive
+
+
 def test_status_bar_shows_the_pack():
     d, g = armoury()
     g.player.pack = J.PACK_TWIN
