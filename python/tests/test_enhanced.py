@@ -37,7 +37,7 @@ def test_original_levels_contain_no_enhanced_objects():
 def test_room_has_two_packs_and_a_turret():
     d, g = armoury()
     packs = sorted(d.entities(J.Pack), key=lambda e: e.x)
-    assert [p.kind for p in packs] == [J.PACK_TWIN, J.PACK_SHIELD]
+    assert [p.kind for p in packs] == [J.PACK_TWIN, J.PACK_BOUNCE, J.PACK_HOMING, J.PACK_SHIELD]
     t = d.entities(J.Turret)
     assert len(t) == 1 and (t[0].x, t[0].y) == (TURRET_X, TURRET_Y) and t[0].hp == J.TURRET_HP
     total, hist = t[0].check(g.cbm, 0)
@@ -62,7 +62,7 @@ def test_pack_pickup_is_remembered():
     assert J.SND_PICKUP in g.sound.history
     g.last_room = None                                   # re-enter the room: the pack is gone
     d.run(1)
-    assert [p.kind for p in d.entities(J.Pack)] == [J.PACK_SHIELD]
+    assert sorted(p.kind for p in d.entities(J.Pack)) == sorted([J.PACK_BOUNCE, J.PACK_HOMING, J.PACK_SHIELD])
 
 
 def test_twin_shot_fires_two_shots_per_press():

@@ -509,7 +509,9 @@ by disassembling GAME.EXE routines (EXPAND_MAP, BLOCK_TO_XY, DRAW_SPRITE).
 
 **Port additions (enhanced mode, not in GAME.EXE):** three extra level-object types that the
 original levels never use, so they only appear in custom `.JPL` levels: type 22 pack
-`(tile, kind, var)` with kind 1 twin shot / 2 shield / 3 charge shot, type 23 turret
+`(tile, kind, var)` with kind 1 twin shot / 2 shield / 3 charge shot / 4 time cell / 5 bounce
+shot / 6 homing / 7 bombs / 8 afterburner / 9 hover / 10 phase / 11 cage remote / 12 freeze
+(X uses the last three), type 23 turret
 `(tile, var, sides)`, and type 24 splitter generator `(tile)`, a ball generator whose big balls
 split into two ordinary balls when shot. With the charge shot, holding fire and letting go
 fires a bolt that wrecks a generator or turret for the rest of the level and pierces ordinary

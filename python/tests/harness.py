@@ -27,7 +27,7 @@ pygame.quit = lambda: None                      # run() calls it; keep fonts ali
 
 KEYS = {
     "left": pygame.K_LEFT, "right": pygame.K_RIGHT,
-    "up": pygame.K_UP, "thrust": pygame.K_SPACE, "fire": pygame.K_z,
+    "up": pygame.K_UP, "thrust": pygame.K_SPACE, "fire": pygame.K_z, "use": pygame.K_x,
 }
 
 
@@ -84,6 +84,9 @@ class Driver:
                     best = (d, px, py)
         if best is None:
             raise RuntimeError(f"no free spot near ({x},{y}) in room {g.current_room}")
+        if g.joe_marked is not None:                 # lift his marker from the old spot
+            J.cb_restore_if(g.joe_marked, g.cbm_backup[g.current_room], 0,
+                            int(g.player.x) >> 1, int(g.player.y) >> 1, J.CT_JOE)
         g.player.x, g.player.y = float(best[1]), float(best[2])
         g.player.vy = g.player.frac = 0
         g.joe_marked = None

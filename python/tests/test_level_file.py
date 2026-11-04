@@ -7,8 +7,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import Driver, J     # noqa: E402
 
 LEVEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "TESTLEVEL.JPL")
-EXPECTED = {0: {1, 2, 3, 4, 5, 6, 17}, 1: {6, 7, 8, 9, 13, 17}, 2: {10, 15, 16}, 3: {11, 12, 20, 22, 24},
-            4: {5, 14, 18}, 5: {19}, 6: {19}, 7: {22, 23}}
+EXPECTED = {0: {1, 2, 3, 4, 5, 6, 17, 22}, 1: {6, 7, 8, 9, 13, 17, 22}, 2: {10, 15, 16, 22},
+            3: {11, 12, 20, 22, 24}, 4: {5, 14, 18, 22}, 5: {19, 22}, 6: {19}, 7: {22, 23}}
+PACKS = {0: [J.PACK_TIME], 1: [J.PACK_PHASE], 2: [J.PACK_REMOTE], 3: [J.PACK_CHARGE, J.PACK_BOMBS],
+         4: [J.PACK_FREEZE], 5: [J.PACK_BURNER, J.PACK_HOVER],
+         7: [J.PACK_TWIN, J.PACK_BOUNCE, J.PACK_HOMING, J.PACK_SHIELD]}
 
 
 def test_level_file_loads_with_every_object_type():
@@ -37,11 +40,14 @@ def test_every_room_runs_and_spawns_its_entities():
     assert d.entities(J.Sentry) and len(d.entities(J.SensorSwitch)) == 2
     d.goto(3, 3)
     assert d.entities(J.BallGen) and d.entities(J.BirdGen) and d.entities(J.OrbGen)
-    assert len(d.entities(J.SplitterGen)) == 1 and [p.kind for p in d.entities(J.Pack)] == [J.PACK_CHARGE]
+    assert len(d.entities(J.SplitterGen)) == 1 and sorted(p.kind for p in d.entities(J.Pack)) == [J.PACK_CHARGE, J.PACK_BOMBS]
     d.goto(3, 5)
     assert len(d.entities(J.Teleporter)) == 3
     d.goto(3, 7)
-    assert len(d.entities(J.Pack)) == 2 and len(d.entities(J.Turret)) == 1
+    assert len(d.entities(J.Pack)) == 4 and len(d.entities(J.Turret)) == 1
+    for room, kinds in PACKS.items():
+        d.goto(3, room)
+        assert [p.kind for p in sorted(d.entities(J.Pack), key=lambda p: p.x)] == kinds, room
 
 
 from collections import deque   # noqa: E402
@@ -73,6 +79,13 @@ def reachable(g, start):
                 seen.add((nx, ny))
                 q.append((nx, ny))
     return seen
+
+
+def packs_reachable(seen, o):
+    """Every pack object in the room (its 8x4 trigger at tile +4,+4) can be touched."""
+    for key, obj in o.items():
+        if key[0] == 22:
+            assert touches(seen, obj["x"] + 4, obj["y"] + 4, 8, 4), f"pack {key} out of reach"
 
 
 def touches(seen, x0, y0, w=16, h=12):
@@ -107,6 +120,7 @@ def test_every_room_is_traversable_and_its_gates_gate():
     # Room 0: wall switch -> door 1, toggle pad -> door 2 (beam-in spot is the start).
     seen, o = room_state(d, 0, {}, start=None)
     assert touches(seen, o[(6, 5, 13)]["x"], o[(6, 5, 13)]["y"]), "wall switch must be reachable"
+    packs_reachable(seen, o)
     assert not touches(seen, o[(17, 12, 14)]["x"], o[(17, 12, 14)]["y"]), "door 1 should block the pad"
     seen, o = room_state(d, 0, {10: 255}, start=None)
     assert touches(seen, o[(17, 12, 14)]["x"], o[(17, 12, 14)]["y"])
@@ -117,6 +131,7 @@ def test_every_room_is_traversable_and_its_gates_gate():
     # Room 1: left switch -> vertical field gate, right switch -> horizontal field gate.
     seen, o = room_state(d, 1, {})
     assert touches(seen, o[(7, 5, 13)]["x"], o[(7, 5, 13)]["y"]), "left switch must be reachable"
+    packs_reachable(seen, o)
     assert not touches(seen, o[(6, 11, 13)]["x"], o[(6, 11, 13)]["y"]), "vertical field should block"
     seen, o = room_state(d, 1, {13: 0})
     assert touches(seen, o[(6, 11, 13)]["x"], o[(6, 11, 13)]["y"]), "right switch behind the open gate"
@@ -127,6 +142,7 @@ def test_every_room_is_traversable_and_its_gates_gate():
 
     # Room 2: both cages touchable (rescue box is 48x36 from the cage tile), exit open.
     seen, o = room_state(d, 2, {})
+    packs_reachable(seen, o)
     for key in ((10, 2, 2), (10, 15, 2)):
         assert touches(seen, o[key]["x"], o[key]["y"], 48, 36), f"cage {key} out of reach"
     for key in ((15, 5, 9), (16, 12, 9)):        # plates sweep 52 px from their tile (0x39BF)
@@ -137,10 +153,11 @@ def test_every_room_is_traversable_and_its_gates_gate():
     # Room 3: generators only; the floor runs straight through, past the charge pack.
     seen, o = room_state(d, 3, {})
     assert right_exit(seen)
-    assert touches(seen, o[(22, 6, 13)]["x"] + 4, o[(22, 6, 13)]["y"] + 4, 8, 4), "charge pack out of reach"
+    packs_reachable(seen, o)
 
     # Room 4: doors start open, the sensor pads behind them are reachable; forced shut they block.
     seen, o = room_state(d, 4, {})
+    packs_reachable(seen, o)
     assert touches(seen, o[(18, 8, 14)]["x"], o[(18, 8, 14)]["y"])
     assert touches(seen, o[(18, 14, 14)]["x"], o[(18, 14, 14)]["y"])
     assert right_exit(seen)
@@ -150,12 +167,12 @@ def test_every_room_is_traversable_and_its_gates_gate():
     # Room 7: both packs can be touched; the turret (an enemy, so ignored by the flood fill)
     # stands on the floor between them and the exit is open.
     seen, o = room_state(d, 7, {})
-    for key in ((22, 3, 13), (22, 16, 13)):
-        assert touches(seen, o[key]["x"] + 4, o[key]["y"] + 4, 8, 4), f"pack {key} out of reach"
+    packs_reachable(seen, o)
     assert right_exit(seen)
 
     # Rooms 5 and 6: every teleporter trigger (shape 4 at tile +16,+12) can be entered.
     seen, o = room_state(d, 5, {})
+    packs_reachable(seen, o)
     for key in ((19, 3, 10), (19, 9, 10), (19, 15, 10)):
         assert touches(seen, o[key]["x"] + 16, o[key]["y"] + 12), f"teleporter {key} out of reach"
     seen, o = room_state(d, 6, {}, start=None)

@@ -128,6 +128,7 @@ def build():
     r.pillar_door(9, 10, 31)                 # door 1 opens when var 10 is on
     r.obj(17, 12, 14, 11, 11)                # toggle pad flips var 11
     r.pillar_door(16, 11, 32)                # door 2 opens when var 11 is on
+    r.obj(22, 3, 13, 4, 40)                  # enhanced: time cell (kind 4), +30 s
     BEAM_TILE = 12 * COLS + 2                # Joe beams in at col 2, row 12
 
     # ---- Room 1: fields and glow balls ----
@@ -140,6 +141,7 @@ def build():
     r.box(4, 12, 4, 14)                      # wall block carrying the left switch
     r.stamp("lswitch", 5, 13)
     r.obj(7, 5, 13, 13)                      # left switch toggles var 13
+    r.obj(22, 2, 13, 10, 41)                 # enhanced: phase pack (kind 10) — walk through the field instead
     r.box(8, 1, 8, 9)                        # pillar; the emitter hangs under it at row 10
     r.stamp("vfield", 8, 11)                 # vertical field fills the gap rows 11-14
     r.obj(8, 8, 11, 13)                      # (var 13 on -> active)
@@ -168,6 +170,7 @@ def build():
     r.obj(15, 5, 9, 18)                      # left plate (var 18 = its phase)
     r.box(13, 9, 13, 13)                     # right plate's wall
     r.obj(16, 12, 9, 19)                     # right plate (var 19)
+    r.obj(22, 8, 13, 11, 42)                 # enhanced: cage remote (kind 11), frees the nearest captive
 
     # ---- Room 3: generators ----
     r = rooms[3]
@@ -183,6 +186,7 @@ def build():
     r.stamp("ballgen", 9, 4)
     r.obj(24, 9, 4)                          # enhanced: splitter generator (big balls that split in two)
     r.obj(22, 6, 13, 3, 27)                  # enhanced: charge-shot pack (kind 3), var 27 — wrecks generators
+    r.obj(22, 13, 13, 7, 43)                 # enhanced: bombs (kind 7, five of them)
 
     # ---- Room 4: sentry, doors with sensor pads ----
     r = rooms[4]
@@ -190,6 +194,7 @@ def build():
     r.exits[6] = r.exits[7] = 3
     r.exits[2] = r.exits[3] = 7
     r.obj(14, 10, 3, 20)                     # sentry (var 20 on → present)
+    r.obj(22, 2, 13, 12, 44)                 # enhanced: freeze pack (kind 12), stops the sentry
     r.pillar_door(6, 21, 33)                 # door, open while var 21 is on
     r.obj(18, 8, 14, 21, 23)                 # pad: var 21 := var 23 (0) → closes door behind you
     r.pillar_door(12, 22, 34)
@@ -205,6 +210,8 @@ def build():
     r.obj(22, 3, 13, 1, 24)                  # twin-shot pack (kind 1), gone once var 24 is 0
     r.obj(23, 10, 14, 26, 2)                 # turret standing on the floor, present while var 26 is on, fires both ways
     r.obj(22, 16, 13, 2, 25)                 # shield pack (kind 2), var 25
+    r.obj(22, 6, 13, 5, 47)                  # enhanced: bounce shot (kind 5)
+    r.obj(22, 13, 13, 6, 48)                 # enhanced: homing shots (kind 6, five of them)
 
     # ---- Rooms 5 and 6: teleporters ----
     r = rooms[5]
@@ -213,6 +220,8 @@ def build():
     t1 = r.stamp("tele", 3, 10)
     t2 = r.stamp("tele", 9, 10)
     t3 = r.stamp("tele", 15, 10)
+    r.obj(22, 7, 14, 8, 45)                  # enhanced: afterburner (kind 8)
+    r.obj(22, 13, 14, 9, 46)                 # enhanced: hover pack (kind 9)
     r6 = rooms[6]
     r6.frame()
     t4 = r6.stamp("tele", 8, 10)

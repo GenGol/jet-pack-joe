@@ -22,7 +22,8 @@ Sprite format (reverse-engineered from GAME.EXE DRAW_SPRITE routine):
 Controls:
   Arrow keys — Move left/right
   Space/Up   — Jetpack thrust
-  Z          — Fire
+  Z          — Fire (enhanced: drops a bomb in mid-air with the bomb pack)
+  X          — Use the held pack (enhanced: phase, cage remote, freeze)
   ESC        — Quit
   R          — Restart
   [ / ]      — Previous/Next room (debug)
@@ -1139,6 +1140,7 @@ JOE_VMAX = 1000           # |vy| clamp (0x0DC2-0x0DD1): at most 1 px per update
 FIRE_REPEAT = 0xC8        # ticks between shots while fire is held (0x0EBF)
 FIRE_POSE = 0x28          # ticks the "firing" body sprite shows after a shot (0x0E78)
 INP_THRUST, INP_RIGHT, INP_LEFT, INP_FIRE = 1, 2, 8, 0x10   # INT 62h DX=1 bits
+INP_USE = 0x20            # enhanced mode: the X key uses the held pack
 
 
 class Player:
@@ -1158,6 +1160,8 @@ class Player:
         self.explosions = []
         self.pack = None          # enhanced mode: PACK_TWIN / PACK_SHIELD / PACK_CHARGE / None
         self.charging = None      # enhanced mode: tick the fire key went down with the charge pack
+        self.ammo = 0             # enhanced mode: shots left in a homing / bomb pack
+        self.use_released = True  # enhanced mode: the X key edge
         self.invuln_until = -1.0  # enhanced mode: tick until which a broken shield protects Joe
 
     # -- helpers --
@@ -1197,8 +1201,13 @@ class Player:
         self.x, self.y = x, y                            # 0x0D5E
         y0 = y
         vy = self.vy
+        thrust, gravity, vmax_up, vmax_down = JOE_THRUST, JOE_GRAVITY, JOE_VMAX, JOE_VMAX
+        if g.enhanced and self.pack == PACK_BURNER:      # enhanced: stronger, faster climb
+            thrust, vmax_up = BURNER_THRUST, BURNER_VMAX
+        elif g.enhanced and self.pack == PACK_HOVER:     # enhanced: lighter, slower fall
+            gravity, vmax_down = HOVER_GRAVITY, HOVER_VMAX
         if inp & INP_THRUST:
-            vy -= JOE_THRUST
+            vy -= thrust
         nx, ny = x, y
         if inp & (INP_RIGHT | INP_LEFT):                 # 0x0D82: ±1 px, both keys cancel
             if inp & INP_RIGHT:
@@ -1213,14 +1222,14 @@ class Player:
                     ny = ty + 3
                 else:
                     nx, ny = x, y
-        vy += JOE_GRAVITY                                # 0x0DBF
-        vy = max(-JOE_VMAX, min(JOE_VMAX, vy))
+        vy += gravity                                    # 0x0DBF
+        vy = max(-vmax_up, min(vmax_down, vy))
         self.vy = vy
         f = self.frac + vy                               # 0x0DD8
-        if f < 0:
+        while f < 0:                                     # (a loop only matters past ±1000: afterburner)
             f += 1000
             ny -= 1
-        if f >= 1000:
+        while f >= 1000:
             f -= 1000
             ny += 1
         self.frac = f
@@ -1273,11 +1282,30 @@ class Player:
                 self.charging = g.tick
         elif not charge and g.tick - self.last_fire >= FIRE_REPEAT:
             self.fire(g)
+        # enhanced: X uses a phase / cage remote / freeze pack, once per press
+        if not inp & INP_USE:
+            self.use_released = True
+        elif self.use_released and g.enhanced and self.pack in PACK_USABLE:
+            self.use_released = False
+            self.use_pack(g)
 
     def fire(self, g):
         self.last_fire = g.tick
         self.fire_released = False
         sx = self.x - 12 + 24 * self.direction
+        if g.enhanced and self.pack in (PACK_BOUNCE, PACK_HOMING, PACK_BOMBS):
+            if self.pack == PACK_BOUNCE:
+                g.entities.append(BounceShot(g, sx, self.y + 2, self.direction))
+            elif self.pack == PACK_HOMING:
+                g.entities.append(HomingShot(g, sx, self.y + 2, self.direction))
+                self.spend(g)
+            elif self.airborne(g.cbm):                            # in the air: drop a bomb
+                g.entities.append(Bomb(g, self.x, self.y + 12))
+                self.spend(g)
+            else:                                                 # on the ground: shoot
+                g.entities.append(Shot(g, sx, self.y + 2, self.direction))
+            play_sound(SND_SHOOT)
+            return
         g.entities.append(Shot(g, sx, self.y + 2, self.direction))  # 0x0EDD
         if self.pack == PACK_TWIN and g.enhanced:        # enhanced: a second shot trails the first
             # Same path, 8 px behind (a stacked pair did not match the gun's muzzle animation):
@@ -1285,6 +1313,32 @@ class Player:
             # two hits.
             g.entities.append(Shot(g, sx - 8 * (2 * self.direction - 1), self.y + 2, self.direction))
         play_sound(SND_SHOOT)                            # 0x0EF8
+
+    def airborne(self, cbm):
+        """Nothing solid (other than his own marker) one half-res row under Joe's shape."""
+        total, hist = cb_check(cbm, 0, self.x >> 1, (self.y + 2) >> 1, 0)
+        return total == hist[CT_JOE]
+
+    def spend(self, g):
+        """One round of a homing / bomb pack; the pack is gone with the last one."""
+        self.ammo -= 1
+        if self.ammo <= 0:
+            self.pack, self.ammo = None, 0
+
+    def use_pack(self, g):
+        """The X key (enhanced): phase and freeze start their timers; the cage remote frees the
+        nearest caged captive. Each is used up by one press (the remote only if a cage was there)."""
+        if self.pack == PACK_PHASE:
+            g.phase_until = g.tick + PHASE_TICKS
+            self.pack = None
+        elif self.pack == PACK_FREEZE:
+            g.freeze_until = g.tick + FREEZE_TICKS
+            self.pack = None
+        elif self.pack == PACK_REMOTE and g.remote_rescue():
+            self.pack = None
+        else:
+            return
+        play_sound(SND_PICKUP)
 
     def charge_level(self, g):
         """0..1: how far the held charge shot has built up (enhanced mode)."""
@@ -1306,12 +1360,16 @@ class Player:
     def draw(self, surface, sprites, g=None):
         x, y = int(self.x), int(self.y)
         enhanced = g is not None and g.enhanced
-        # A broken shield's invulnerability flickers Joe on alternate frames.
-        if not (enhanced and g.tick < self.invuln_until and g.frame_no & 1):
+        # A broken shield's invulnerability (and the phase pack) flickers Joe on alternate frames.
+        ghostly = enhanced and (g.tick < self.invuln_until or g.tick < g.phase_until)
+        if not (ghostly and g.frame_no & 1):
             for idx in (self.body_sprite, self.flame_sprite):
                 if idx < len(sprites):
                     sp = sprites[idx]
                     surface.blit(sp["surf"], (x + sp["x_off"], y + sp["y_off"]))
+            if enhanced and self.pack == PACK_BURNER and self.flame_sprite >= 12:   # thrusting
+                sp = sprites[self.flame_sprite]                      # a second flame below
+                surface.blit(sp["surf"], (x + sp["x_off"], y + sp["y_off"] + 5))
         if enhanced and self.pack == PACK_SHIELD:
             pal = g.levels[g.current_level]["pal"]
             pygame.draw.ellipse(surface, pal[11 if g.frame_no & 2 else 3], (x - 19, y - 18, 39, 36), 1)
@@ -1513,7 +1571,24 @@ class TimeoutBeam(Entity):
 #             like any enemy. Like the original enemies it comes back when the room is re-entered.
 # ---------------------------------------------------------------------------
 PACK_TWIN, PACK_SHIELD, PACK_CHARGE = 1, 2, 3
-PACK_NAMES = {PACK_TWIN: "TWIN SHOT", PACK_SHIELD: "SHIELD", PACK_CHARGE: "CHARGE SHOT"}
+(PACK_TIME, PACK_BOUNCE, PACK_HOMING, PACK_BOMBS, PACK_BURNER,
+ PACK_HOVER, PACK_PHASE, PACK_REMOTE, PACK_FREEZE) = range(4, 13)
+PACK_NAMES = {PACK_TWIN: "TWIN SHOT", PACK_SHIELD: "SHIELD", PACK_CHARGE: "CHARGE SHOT",
+              PACK_BOUNCE: "BOUNCE SHOT", PACK_HOMING: "HOMING", PACK_BOMBS: "BOMBS",
+              PACK_BURNER: "AFTERBURNER", PACK_HOVER: "HOVER", PACK_PHASE: "PHASE",
+              PACK_REMOTE: "CAGE REMOTE", PACK_FREEZE: "FREEZE"}
+PACK_AMMO = {PACK_HOMING: 5, PACK_BOMBS: 5}        # packs that are used up round by round
+PACK_USABLE = {PACK_PHASE, PACK_REMOTE, PACK_FREEZE}   # packs the X key triggers
+TIME_CELL_SECONDS = 30           # a time cell (kind 4) is not carried: it adds to the clock at once
+BOUNCE_MAX = 2                   # wall bounces before a bounce shot dies
+HOMING_INTERVAL = 18             # ticks per step of a homing shot (a shot is 15): a bit slower
+HOMING_LIFE = 1200               # ticks before a homing shot gives up (~1 s)
+BOMB_INTERVAL = 10               # a bomb falls with Joe's gravity, checked every 10 ticks
+BLAST_RADIUS = 14                # half-res cells (28 px) a bomb clears of enemies
+BURNER_THRUST, BURNER_VMAX = 130, 1500      # afterburner: thrust 82 → 130, climb cap 1 → 1.5 px
+HOVER_GRAVITY, HOVER_VMAX = 20, 450         # hover: gravity 41 → 20, fall cap 1 → 0.45 px
+PHASE_TICKS = 3500               # ~3 s of passing through fields and energy
+FREEZE_TICKS = 4700              # ~4 s of frozen enemies, turrets, generators and plates
 CHARGE_TICKS = 1400              # hold fire this long (~1.2 s) for a charged shot
 CHARGE_SHOT_INTERVAL = 12        # ticks per 2 px step: a little faster than a shot (15)
 SHIELD_INVULN = 1750             # ticks (~1.5 s) Joe cannot die after his shield takes a hit
@@ -1554,10 +1629,51 @@ def shape_ring(shape):
 
 
 _SH_CACHE[SH_BIGRING] = shape_ring(SH_BIGBALL)
+SH_BLAST = 1004                  # a bomb's blast: a disc of BLAST_RADIUS half-res cells
+_SH_CACHE[SH_BLAST] = tuple((row, -int((BLAST_RADIUS ** 2 - row ** 2) ** 0.5),
+                             2 * int((BLAST_RADIUS ** 2 - row ** 2) ** 0.5) + 1)
+                            for row in range(-BLAST_RADIUS, BLAST_RADIUS + 1))
 
 # Pixel art for the new objects: one hex digit per pixel = palette index 0-15 (the EGA colours
 # shared by every level palette), "." = transparent.
+PACK_GLYPHS = {                  # 9x7 symbols on a coloured pack body ("." = body colour)
+    PACK_TIME: ("A", ("...FFF...", "..F...F..", ".F..F..F.", ".F..FF.F.", ".F.....F.", "..F...F..", "...FFF...")),
+    PACK_BOUNCE: ("D", ("F.......F", "F.......F", ".F.....F.", ".F.....F.", "..F...F..", "...F.F...", "....F....")),
+    PACK_HOMING: ("5", ("....F....", "..FFFFF..", ".F..F..F.", "FFFFFFFFF", ".F..F..F.", "..FFFFF..", "....F....")),
+    PACK_BOMBS: ("4", ("......EE.", ".....E...", "..0000...", ".000000..", ".000F00..", ".000000..", "..0000...")),
+    PACK_BURNER: ("C", ("....E....", "...EE....", "...EEE...", "..EEFE...", "..EFFEE..", "..EFFFE..", "...EEE...")),
+    PACK_HOVER: ("3", (".........", ".F.....F.", "FFF...FFF", ".FFF.FFF.", "..FFFFF..", "...FFF...", ".........")),
+    PACK_PHASE: ("9", ("..F.F.F..", ".........", "F.......F", ".........", "F.......F", ".........", "..F.F.F..")),
+    PACK_REMOTE: ("6", (".FFF.....", "F...F....", "F...FFFFF", "F...F.F.F", ".FFF..F.F", ".........", ".........")),
+    PACK_FREEZE: ("B", ("....F....", ".F..F..F.", "..F.F.F..", "FFFFFFFFF", "..F.F.F..", ".F..F..F.", "....F....")),
+}
+
+
+def pack_rows(body, glyph):
+    """A 14x12 pack icon like "pack1": grey frame, `body` colour, the glyph in the middle."""
+    rows = ["..888888888888", ".8" + body * 11 + "8"]
+    for line in glyph:
+        rows.append("8" + body + line.replace(".", body) + body * 2 + "8")
+    rows += [".8" + body * 11 + "8", "..888888888888", "..8.........8."]
+    return tuple(rows)
+
+
 ART = {
+    "seeker": (                  # the homing shot, 6x4
+        ".DDDD.",
+        "DFFFFD",
+        "DFFFFD",
+        ".DDDD.",
+    ),
+    "bomb": (                    # 7x7, fuse top right
+        "....EE.",
+        "...E...",
+        ".0000..",
+        "000000.",
+        "00F000.",
+        "000000.",
+        ".0000..",
+    ),
     "pack1": (                   # twin shot: a yellow pack with two gun barrels
         "..888888888888",
         ".8EEEEEEEEEEE8",
@@ -1677,6 +1793,8 @@ def build_art(pal):
     """The enhanced-mode surfaces in a level's palette."""
     art = {name: make_art(rows, pal) for name, rows in ART.items()}
     art["wreck"] = make_art(wreck_rows(), pal)
+    for kind, (body, glyph) in PACK_GLYPHS.items():
+        art["pack%d" % kind] = make_art(pack_rows(body, glyph), pal)
     art["bolt_hot"] = make_art(ART["bolt"], pal, white=True)
     art["turret_l"] = make_art(ART["turret"], pal, flip=True)
     art["turret_hit"] = make_art(ART["turret"], pal, white=True)
@@ -1702,7 +1820,12 @@ class Pack(Entity):
 
     def update(self, g):
         if g.death is None and cb_check(g.cbm, 4, self.x >> 1, self.y >> 1, 0)[1][CT_JOE]:
-            g.player.pack = self.kind
+            if self.kind == PACK_TIME:                   # not carried: straight onto the clock
+                g.player.time = min(999, g.player.time + TIME_CELL_SECONDS)
+            else:
+                g.player.pack = self.kind
+                g.player.ammo = PACK_AMMO.get(self.kind, 0)
+                g.player.charging = None
             g.switch_state[self.var] = 0
             play_sound(SND_PICKUP)
             self.alive = False
@@ -1710,6 +1833,151 @@ class Pack(Entity):
     def draw(self, surface, sprites, frame):
         bob = (0, 0, -1, -2, -2, -2, -1, 0)[(frame >> 2) & 7]
         surface.blit(self.art, (self.x + 1, self.y + bob))
+
+
+class BounceShot(Shot):
+    """The bounce pack's shot (enhanced): a shot that turns round at a wall, up to BOUNCE_MAX
+    times, so it can reach enemies behind Joe or tucked under a ledge. Everything else is the
+    shot handler: an enemy's bytes are erased (it explodes) and the shot dies."""
+
+    def __init__(self, g, x, y, direction):
+        super().__init__(g, x, y, direction)
+        self.bounces = 0
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        nx = self.x + self.speed
+        if self.cross(g, nx, self.y):
+            return
+        hx, hy = nx >> 1, self.y >> 1
+        total, hist = cb_check(cbm, 1, hx, hy, 0)
+        if total and total == hist[CT_WALL] and self.bounces < BOUNCE_MAX:
+            self.bounces += 1                           # a bare wall: turn round, stay put
+            self.direction ^= 1
+            self.speed = -self.speed
+            self.sprite_idx = 23 + self.direction
+            return
+        self.x = nx
+        if total == 0:
+            return
+        joe = hist[CT_JOE]
+        if joe == 0:
+            cb_restore(cbm, backup, 1, hx, hy)
+            if self.visible == 1 and self.room == g.current_room:
+                g.player.explosions.append(Explosion(nx, self.y))
+            self.alive = False
+        elif total != joe:
+            self.alive = False
+
+
+ENEMY_TARGETS = ()               # filled below: the classes a homing shot steers at
+
+
+class HomingShot(Entity):
+    """The homing pack's shot (enhanced): steers at the nearest ball, bird, orb or turret in the
+    room, 2 px sideways and 1 px up or down per step, a little slower than a shot. Without a
+    target it flies straight. It kills like a shot (erasing the enemy's bytes), dies on a wall,
+    and gives up after HOMING_LIFE ticks. Not mobile: it dies at the room's edge."""
+    interval = HOMING_INTERVAL
+
+    def __init__(self, g, x, y, direction):
+        super().__init__(x, y, g.tick)
+        self.direction = direction
+        self.born = g.tick
+        self.art = g.art["seeker"]
+        self.room = g.current_room
+
+    def target(self, g):
+        best = None
+        for e in g.entities:
+            if isinstance(e, ENEMY_TARGETS) and e.alive and e.visible == 1:
+                d = abs(e.x - self.x) + abs(e.y - self.y)
+                if best is None or d < best[0]:
+                    best = (d, e)
+        return best[1] if best else None
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        if g.tick - self.born > HOMING_LIFE:
+            self.alive = False
+            return
+        t = self.target(g)
+        if t is None:
+            nx, ny = self.x + (2 if self.direction else -2), self.y
+        else:
+            dx, dy = t.x - self.x, t.y - self.y
+            nx = self.x + (2 if dx > 1 else -2 if dx < -1 else 0)
+            ny = self.y + (1 if dy > 0 else -1 if dy < 0 else 0)
+            if nx != self.x:
+                self.direction = 1 if nx > self.x else 0
+        if not in_room(nx, ny):
+            self.alive = False
+            return
+        self.x, self.y = nx, ny
+        hx, hy = nx >> 1, ny >> 1
+        total, hist = cb_check(cbm, 1, hx, hy, 0)
+        if total == 0 or total == hist[CT_JOE]:
+            return
+        if hist[CT_JOE] == 0:
+            cb_restore(cbm, backup, 1, hx, hy)          # erases the enemy: it explodes
+            g.player.explosions.append(Explosion(nx, ny))
+        self.alive = False
+
+    def draw(self, surface, sprites, frame):
+        surface.blit(self.art, (self.x - 3, self.y - 2))
+
+
+class Bomb(Entity):
+    """The bomb pack's bomb (enhanced): dropped under Joe in mid-air, it falls with his gravity
+    and goes off on the first solid thing or enemy under it. The blast (a disc of BLAST_RADIUS
+    half-res cells) erases every enemy byte in it, so balls, birds and orbs explode, and kills
+    any turret or sentry whose centre is inside. Joe is not hurt by his own bombs."""
+    interval = BOMB_INTERVAL
+
+    def __init__(self, g, x, y):
+        super().__init__(x, y, g.tick)
+        self.vy = 0
+        self.frac = 0
+        self.art = g.art["bomb"]
+        self.room = g.current_room
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        self.vy = min(JOE_VMAX, self.vy + JOE_GRAVITY)
+        f = self.frac + self.vy
+        ny = self.y
+        if f >= 1000:
+            f -= 1000
+            ny += 1
+        self.frac = f
+        if not in_room(self.x, ny):
+            self.alive = False
+            return
+        total, hist = cb_check(cbm, 1, self.x >> 1, ny >> 1, 0)
+        if total and total != hist[CT_JOE]:
+            self.detonate(g)
+            return
+        self.y = ny
+
+    def detonate(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        hx, hy = self.x >> 1, self.y >> 1
+        cb_restore_if(cbm, backup, SH_BLAST, hx, hy, CT_ENEMY)
+        r2 = (2 * BLAST_RADIUS) ** 2
+        for e in list(g.entities):
+            if not e.alive:
+                continue
+            if isinstance(e, Turret) and (e.x - self.x) ** 2 + (e.y - self.y) ** 2 <= r2:
+                e.die(g)
+            elif isinstance(e, Sentry) and e.visible == 1 and (e.x - self.x) ** 2 + (e.y - self.y) ** 2 <= r2:
+                e.kill(g)
+        g.entities.append(EnemyExplosion(g, self.x, self.y, None))
+        for dx in (-12, 12):
+            g.player.explosions.append(Explosion(self.x + dx, self.y - 6))
+        self.alive = False
+
+    def draw(self, surface, sprites, frame):
+        surface.blit(self.art, (self.x - 3, self.y - 3))
 
 
 class ChargedShot(Entity):
@@ -1948,6 +2216,10 @@ class Turret(Entity):
             surface.blit(self.art["flash"], (fx, self.y - 3))
 
 
+FREEZABLE = (Ball, Bird, Orb, Sentry, Turret, TurretShot, Generator)   # the freeze pack halts these
+ENEMY_TARGETS = (Ball, Bird, Orb, Turret)                               # what a homing shot steers at
+
+
 class JetPackJoe:
     def __init__(self):
         pygame.init()
@@ -1975,6 +2247,8 @@ class JetPackJoe:
         self.entities = []       # enemies, generators, enemy explosions in the current room
         self.dormant = []        # mobile objects hidden in some room (slot visible=0), any room
         self.destroyed = set()   # enhanced: (room, tile) of generators a charged shot wrecked
+        self.phase_until = -1.0  # enhanced: tick until which Joe passes through fields and energy
+        self.freeze_until = -1.0 # enhanced: tick until which enemies and plates stand still
         self.last_room = None
         self.joe_marked = None   # the cbm Joe's type-14 marker is currently stamped in
         self.death = None        # Joe death animation state (GAME.EXE 0x0F05)
@@ -2276,7 +2550,11 @@ class JetPackJoe:
     def update_room_objects(self):
         """0x06F8 for the room's non-entity objects, plus the transporter beams."""
         room = self.current_room
+        frozen = self.enhanced and self.tick < self.freeze_until
         for obj in self.room_objects.get(room, []):
+            if frozen and obj["type"] in (15, 16) and obj.get("interval") is not None:
+                obj["next_time"] = self.tick + obj["interval"]   # enhanced freeze: plates halt
+                continue
             n = 0
             while obj.get("interval") is not None and obj["next_time"] <= self.tick and n < 8:
                 self.step_room_object(obj)
@@ -2365,6 +2643,9 @@ class JetPackJoe:
                 ty += TILE_H
                 i += 1
             obj["fg_tiles"] = tiles
+            if self.phasing():                                    # enhanced phase: no bars
+                obj["field_active"] = True
+                return
             for r in range(0, 35, 2):                               # shape 7: cols 3-4, every 2nd row
                 by = y_top // 2 + r
                 for c in (3, 4):
@@ -2392,6 +2673,9 @@ class JetPackJoe:
             obj["frame"] = (obj["frame"] + 1) & 3
             obj["fg_tiles"] = {tile + i: ti for i, ti in enumerate(self.HFIELD_TILES[obj["frame"]])
                                if tile + i < MAP_ROWS * MAP_COLS}
+            if self.phasing():                                    # enhanced phase: no bars
+                obj["field_active"] = True
+                return
             for r in (2, 3):                                        # shape 11: 48w x 2h
                 by = hy + r
                 for c in range(48):
@@ -2798,13 +3082,34 @@ class JetPackJoe:
         self.cbm_bak = self.cbm_backup[room]
         if self.dormant:
             self.wake_dormant()
+        frozen = self.enhanced and self.tick < self.freeze_until
         for e in list(self.entities):
+            if frozen and isinstance(e, FREEZABLE):
+                e.next_time = self.tick + e.interval     # stands still, no catching up after
+                continue
             n = 0
             while e.alive and e.next_time <= self.tick and n < 8:
                 e.update(self)
                 e.next_time += e.interval
                 n += 1
         self.entities = [e for e in self.entities if e.alive and e.visible == 1]
+
+    def remote_rescue(self):
+        """The cage remote (enhanced): free the nearest caged captive in the room, exactly as if
+        Joe had flown into its cage. Returns whether there was one."""
+        px, py = self.player.x, self.player.y
+        cages = [o for o in self.room_objects.get(self.current_room, [])
+                 if o["type"] == 10 and o.get("disappear", -1) < 0 and o.get("interval") is not None]
+        if not cages:
+            return False
+        obj = min(cages, key=lambda o: abs(o["x"] - px) + abs(o["y"] - py))
+        obj["disappear"] = 0
+        obj["beam_next"] = self.tick + self.BEAM_INTERVAL
+        obj["fg_tiles"] = {}
+        play_sound(SND_TRANSPORTER)
+        play_sound(SND_THANKS)
+        obj["next_time"] += 0x302
+        return True
 
     def draw_entities(self, surface):
         """Enemy layer (sprite priority 3-5: below Joe). Generator tiles are background."""
@@ -2824,6 +3129,8 @@ class JetPackJoe:
         hx, hy = px >> 1, py >> 1
         if self.joe_marked is cbm:
             total, hist = cb_check(cbm, 0, hx, hy, CT_JOE)
+            if self.phasing():                                    # enhanced phase: energy (the
+                total -= hist[0]                                  # restored 0 bytes) is harmless
             if total and total != hist[CT_WALL]:
                 if os.environ.get("JPJ_DEBUG"):
                     print(f"DEATH at ({px},{py}) room {self.current_room}: bytes under Joe by type "
@@ -2831,6 +3138,9 @@ class JetPackJoe:
                 self.start_death()
             cb_restore_if(cbm, backup, 0, hx, hy, CT_JOE)
         self.joe_marked = None
+
+    def phasing(self):
+        return self.enhanced and self.tick < self.phase_until
 
     def joe_mark(self):
         """End of Joe's update (0x0E3B): DRAW_COLLISION(shape 0, type 14) at his position."""
@@ -2979,6 +3289,7 @@ class JetPackJoe:
             if level != self.current_level:
                 self.destroyed = set()      # enhanced: wrecked generators stay wrecked through deaths
             self.current_level = level
+            self.phase_until = self.freeze_until = -1.0
             self.build_assets()
             self.current_room = self.start_room
             # Position Joe at beam-in tile (matching GAME.EXE 0x0C7E)
@@ -3082,6 +3393,8 @@ class JetPackJoe:
                         inp |= INP_THRUST
                     if keys[pygame.K_z]:
                         inp |= INP_FIRE
+                    if keys[pygame.K_x]:
+                        inp |= INP_USE
                 if dying:
                     self.update_death()
                 elif not beaming:
@@ -3181,7 +3494,14 @@ class JetPackJoe:
         elif not self.enemies_enabled:
             debug = "   NO ENEMIES    "
         elif self.enhanced and self.player.pack in PACK_NAMES:      # enhanced: the pack slot
-            pack = f"PACK: {PACK_NAMES[self.player.pack]}".ljust(17)
+            pack = f"PACK: {PACK_NAMES[self.player.pack]}"
+            if self.player.ammo:
+                pack += f" X{self.player.ammo}"
+            pack = pack.ljust(17)
+        elif self.enhanced and self.tick < self.freeze_until:
+            pack = f"FROZEN {(self.freeze_until - self.tick) / 1165.2:.1f}".center(17)
+        elif self.enhanced and self.tick < self.phase_until:
+            pack = f"PHASE {(self.phase_until - self.tick) / 1165.2:.1f}".center(17)
         line = f"TIME: {time_s}   {debug or pack or middle}   ROOM: {self.current_room:02d}"
         draw_text8(self.screen, 0, bar_y, line, pal[7])
         draw_text8(self.screen, 6 * 8, bar_y, time_s, pal[10])
