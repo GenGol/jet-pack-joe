@@ -199,14 +199,14 @@ def test_phase_pack_walks_through_a_live_field():
 
 def test_cage_remote_frees_the_nearest_captive():
     d, g = room(2)
-    d.place(30, FLOOR_Y)                                    # left of the plates' sweep
+    d.place(250, FLOOR_Y)                                   # right of the plates' sweep, off the pack
     g.player.pack = J.PACK_REMOTE
     cages = sorted((o for o in g.room_objects[2] if o["type"] == 10), key=lambda o: o["x"])
     assert all(o.get("disappear", -1) < 0 for o in cages)
     before = g.captive_count
     d.run(1, keys={"use"})
     assert g.player.pack is None
-    assert cages[0]["disappear"] >= 0 and cages[1].get("disappear", -1) < 0, "the nearer cage opens"
+    assert cages[1]["disappear"] >= 0 and cages[0].get("disappear", -1) < 0, "the nearer cage opens"
     assert J.SND_THANKS in g.sound.history
     d.run(400, until=lambda g: g.captive_count < before)
     assert g.captive_count == before - 1
