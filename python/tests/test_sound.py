@@ -10,9 +10,9 @@ def test_bank_loads_five_samples():
     d = Driver()
     bank = d.g.sound
     assert bank.enabled, "mixer did not initialise under the dummy audio driver"
-    assert len(bank.sounds) == 7, "the five DS00.DAT samples plus the two synthesized enhanced-mode ones"
+    assert len(bank.sounds) == 8, "the five DS00.DAT samples plus the three synthesized enhanced-mode ones"
     # Durations at 9321.7 Hz: 7424/5888/11520/9728/4352 bytes.
-    expect = [7424, 5888, 11520, 9728, 4352, len(J.synth_pickup()), len(J.synth_turret())]
+    expect = [7424, 5888, 11520, 9728, 4352, len(J.synth_pickup()), len(J.synth_turret()), len(J.synth_charge())]
     for snd, n in zip(bank.sounds, expect):
         assert abs(snd.get_length() - n / J.SOUND_RATE) < 0.02, (snd.get_length(), n / J.SOUND_RATE)
     assert all(0 <= b < 64 for b in J.synth_pickup() + J.synth_turret()), "6-bit samples"

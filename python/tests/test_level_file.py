@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import Driver, J     # noqa: E402
 
 LEVEL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "TESTLEVEL.JPL")
-EXPECTED = {0: {1, 2, 3, 4, 5, 6, 17}, 1: {6, 7, 8, 9, 13, 17}, 2: {10, 15, 16}, 3: {11, 12, 20},
+EXPECTED = {0: {1, 2, 3, 4, 5, 6, 17}, 1: {6, 7, 8, 9, 13, 17}, 2: {10, 15, 16}, 3: {11, 12, 20, 22, 24},
             4: {5, 14, 18}, 5: {19}, 6: {19}, 7: {22, 23}}
 
 
@@ -37,6 +37,7 @@ def test_every_room_runs_and_spawns_its_entities():
     assert d.entities(J.Sentry) and len(d.entities(J.SensorSwitch)) == 2
     d.goto(3, 3)
     assert d.entities(J.BallGen) and d.entities(J.BirdGen) and d.entities(J.OrbGen)
+    assert len(d.entities(J.SplitterGen)) == 1 and [p.kind for p in d.entities(J.Pack)] == [J.PACK_CHARGE]
     d.goto(3, 5)
     assert len(d.entities(J.Teleporter)) == 3
     d.goto(3, 7)
@@ -133,9 +134,10 @@ def test_every_room_is_traversable_and_its_gates_gate():
         assert touches(seen, x0, o[key]["y"], 52 + 16, 60), f"cannot reach plate {key}'s sweep"
     assert right_exit(seen)
 
-    # Room 3: generators only; the floor runs straight through.
+    # Room 3: generators only; the floor runs straight through, past the charge pack.
     seen, o = room_state(d, 3, {})
     assert right_exit(seen)
+    assert touches(seen, o[(22, 6, 13)]["x"] + 4, o[(22, 6, 13)]["y"] + 4, 8, 4), "charge pack out of reach"
 
     # Room 4: doors start open, the sensor pads behind them are reachable; forced shut they block.
     seen, o = room_state(d, 4, {})

@@ -549,10 +549,11 @@ class Ball(Entity):
     when anything (a shot's erase, Joe's marker, another ball's ring) disturbs its own bytes."""
     interval = 16
     mobile = True
+    SHAPE, RING, SPAWN_SHAPE = 16, 17, 2    # collision footprint, the ring around it, init check
 
-    @staticmethod
-    def can_spawn(g, x, y):
-        return cb_check(g.cbm, 2, x >> 1, y >> 1, 0)[0] == 0      # init check at 0x15C8
+    @classmethod
+    def can_spawn(cls, g, x, y):
+        return cb_check(g.cbm, cls.SPAWN_SHAPE, x >> 1, y >> 1, 0)[0] == 0   # init check at 0x15C8
 
     def __init__(self, g, x, y):
         super().__init__(x, y, g.tick)
@@ -569,11 +570,11 @@ class Ball(Entity):
 
     def activate(self, g):
         self.visible = 1
-        cb_write(g.cbm, 16, self.x >> 1, self.y >> 1, CT_ENEMY)   # activate (0x1657)
+        cb_write(g.cbm, self.SHAPE, self.x >> 1, self.y >> 1, CT_ENEMY)   # activate (0x1657)
 
     def explode(self, g, cbm, backup, hx, hy):
         """0x176A: only a live ball in Joe's room leaves an explosion; clones/dormant just die."""
-        cb_restore_if(cbm, backup, 16, hx, hy, CT_ENEMY)
+        cb_restore_if(cbm, backup, self.SHAPE, hx, hy, CT_ENEMY)
         if self.visible == 1 and self.room == g.current_room:
             g.entities.append(EnemyExplosion(g, self.x, self.y, self.sprite_idx))
         self.alive = False
@@ -599,11 +600,11 @@ class Ball(Entity):
                 cy = -cy
                 self.sy = -1
             self.adx, self.ady = cx, cy
-        total, hist = cb_check(cbm, 16, hx, hy, CT_ENEMY)
+        total, hist = cb_check(cbm, self.SHAPE, hx, hy, CT_ENEMY)
         if total:                                        # something intruded → explode (0x176A)
             self.explode(g, cbm, backup, hx, hy)
             return
-        cb_restore_if(cbm, backup, 16, hx, hy, CT_ENEMY)
+        cb_restore_if(cbm, backup, self.SHAPE, hx, hy, CT_ENEMY)
         nx, ny = x, y
         if self.err <= 0:
             self.err += self.ady
@@ -620,14 +621,14 @@ class Ball(Entity):
                 self.next_time -= 7
         if self.cross(g, nx, ny):                        # 0x1716: left the room → dormant
             return
-        total, hist = cb_check(cbm, 16, nx >> 1, ny >> 1, 0)
+        total, hist = cb_check(cbm, self.SHAPE, nx >> 1, ny >> 1, 0)
         if total:
             nx, ny = x, y
             self.retarget = 1
         self.x, self.y = nx, ny
         hx, hy = nx >> 1, ny >> 1
-        cb_restore(cbm, backup, 17, hx, hy)
-        cb_write(cbm, 16, hx, hy, CT_ENEMY)
+        cb_restore(cbm, backup, self.RING, hx, hy)
+        cb_write(cbm, self.SHAPE, hx, hy, CT_ENEMY)
         self.frame_acc += 22
         if self.frame_acc >= 256:
             self.frame_acc -= 256
@@ -767,9 +768,22 @@ class Generator(Entity):
     FRAMES = ()
 
     def __init__(self, g, tile):
+        self.tile = tile
         self.col, self.row = tile % MAP_COLS, tile // MAP_COLS
         super().__init__(self.col * TILE_W + 15, self.row * TILE_H + 11, g.tick)
         self.frame = None
+
+    def rect(self):
+        """Its 2x2 tile block in pixels: (x, y, w, h)."""
+        return (self.col * TILE_W, self.row * TILE_H, 2 * TILE_W, 2 * TILE_H)
+
+    def wreck(self, g):
+        """Enhanced mode: a charged shot destroys it for the rest of the level. The explosion
+        plays over the block and a DeadGenerator shows the rubble from now on."""
+        g.destroyed.add((g.current_room, self.tile))
+        g.entities.append(EnemyExplosion(g, self.x, self.y, None))
+        g.entities.append(DeadGenerator(g, self.tile))
+        self.alive = False
 
     def draw(self, surface, sprites, frame):
         pass
@@ -861,6 +875,8 @@ class BallGen(Generator):
     (shape 16) is clear, otherwise it retries next update."""
     interval = 257
     FRAMES = ((506, 507, 526, 527), (508, 509, 528, 529), (546, 547, 566, 567), (548, 549, 568, 569))
+    BALL = Ball          # the SplitterGen (enhanced) swaps in the BigBall
+    REFILL = 8
 
     def __init__(self, g, tile):
         super().__init__(g, tile)
@@ -869,11 +885,11 @@ class BallGen(Generator):
     def update(self, g):
         c = self.countdown - 1
         if c == 0:
-            if cb_check(g.cbm, 16, self.x >> 1, self.y >> 1, 0)[0]:
+            if cb_check(g.cbm, self.BALL.SHAPE, self.x >> 1, self.y >> 1, 0)[0]:
                 return                                  # blocked: countdown not stored, retry
-            if Ball.can_spawn(g, self.x, self.y):
-                g.entities.append(Ball(g, self.x, self.y))
-            self.countdown = 8
+            if self.BALL.can_spawn(g, self.x, self.y):
+                g.entities.append(self.BALL(g, self.x, self.y))
+            self.countdown = self.REFILL
             self.frame = 0
         else:
             self.countdown = c
@@ -937,8 +953,8 @@ class BirdGen(Generator):
 # ---------------------------------------------------------------------------------------------
 SOUND_RATE = 1193182 / 128                     # 9321.7 Hz
 SND_EXPLOSION, SND_SHOOT, SND_HELP, SND_TRANSPORTER, SND_THANKS = range(5)
-SND_PICKUP, SND_TURRET = 5, 6                  # enhanced mode only: synthesized, not in DS00.DAT
-SOUND_NAMES = ("explosion", "shoot", "help me", "transporter", "thank you", "pickup", "turret")
+SND_PICKUP, SND_TURRET, SND_CHARGE = 5, 6, 7   # enhanced mode only: synthesized, not in DS00.DAT
+SOUND_NAMES = ("explosion", "shoot", "help me", "transporter", "thank you", "pickup", "turret", "charge")
 
 
 def synth_tone(freq, ms, amp=12):
@@ -951,6 +967,11 @@ def synth_tone(freq, ms, amp=12):
 def synth_pickup():
     """Three rising notes: the pack pickup."""
     return synth_tone(660, 45) + synth_tone(880, 45) + synth_tone(1320, 90)
+
+
+def synth_charge():
+    """The charged shot: a heavy falling tone."""
+    return synth_tone(330, 40, 14) + synth_tone(220, 60, 14) + synth_tone(110, 110, 14)
 
 
 def synth_turret():
@@ -997,7 +1018,7 @@ class SoundBank:
         offs = [struct.unpack_from('<H', data, 2 * i)[0] * 16 for i in range(6)]
         for i in range(5):
             self.sounds.append(self._convert(data[offs[i]:offs[i + 1]], rate, nch))
-        for raw in (synth_pickup(), synth_turret()):           # SND_PICKUP, SND_TURRET
+        for raw in (synth_pickup(), synth_turret(), synth_charge()):   # SND_PICKUP/TURRET/CHARGE
             self.sounds.append(self._convert(raw, rate, nch))
         pygame.mixer.set_num_channels(self.CHANNELS)
         self._channels = [pygame.mixer.Channel(i) for i in range(self.CHANNELS)]
@@ -1135,7 +1156,8 @@ class Player:
         self.flame_sprite = 9
         self.time = 0             # [0x23DA]: the level trailer's timer, set by set_level
         self.explosions = []
-        self.pack = None          # enhanced mode: PACK_TWIN / PACK_SHIELD / None
+        self.pack = None          # enhanced mode: PACK_TWIN / PACK_SHIELD / PACK_CHARGE / None
+        self.charging = None      # enhanced mode: tick the fire key went down with the charge pack
         self.invuln_until = -1.0  # enhanced mode: tick until which a broken shield protects Joe
 
     # -- helpers --
@@ -1236,10 +1258,20 @@ class Player:
             body += 4
         self.body_sprite = body
         self.flame_sprite = 8 + (body & 3) + ((int(g.tick) >> 4) & 4) + (4 if inp & INP_THRUST else 0)
-        # 0x0EAA fire: once per press, then every FIRE_REPEAT ticks while held
+        # 0x0EAA fire: once per press, then every FIRE_REPEAT ticks while held. With the charge
+        # pack (enhanced) holding the key charges instead of repeating, and letting go after
+        # CHARGE_TICKS looses the charged shot.
+        charge = g.enhanced and self.pack == PACK_CHARGE
         if not inp & INP_FIRE:
+            if charge and self.charging is not None and g.tick - self.charging >= CHARGE_TICKS:
+                self.fire_charged(g)
+            self.charging = None
             self.fire_released = True
-        elif self.fire_released or g.tick - self.last_fire >= FIRE_REPEAT:
+        elif self.fire_released:
+            self.fire(g)
+            if charge:
+                self.charging = g.tick
+        elif not charge and g.tick - self.last_fire >= FIRE_REPEAT:
             self.fire(g)
 
     def fire(self, g):
@@ -1253,6 +1285,18 @@ class Player:
             # two hits.
             g.entities.append(Shot(g, sx - 8 * (2 * self.direction - 1), self.y + 2, self.direction))
         play_sound(SND_SHOOT)                            # 0x0EF8
+
+    def charge_level(self, g):
+        """0..1: how far the held charge shot has built up (enhanced mode)."""
+        if self.charging is None:
+            return 0.0
+        return min(1.0, (g.tick - self.charging) / CHARGE_TICKS)
+
+    def fire_charged(self, g):
+        self.last_fire = g.tick
+        sx = self.x - 12 + 24 * self.direction
+        g.entities.append(ChargedShot(g, sx, self.y + 2, self.direction))
+        play_sound(SND_CHARGE)
 
     def update_explosions(self):
         for e in self.explosions:
@@ -1271,6 +1315,18 @@ class Player:
         if enhanced and self.pack == PACK_SHIELD:
             pal = g.levels[g.current_level]["pal"]
             pygame.draw.ellipse(surface, pal[11 if g.frame_no & 2 else 3], (x - 19, y - 18, 39, 36), 1)
+        if enhanced and self.pack == PACK_CHARGE and self.charging is not None:
+            # The charge builds up as a glow at the muzzle; full, it flares white.
+            pal = g.levels[g.current_level]["pal"]
+            level = self.charge_level(g)
+            mx, my = x - 12 + 24 * self.direction, y + 2
+            if level >= 1.0:
+                if g.frame_no & 2:
+                    surface.blit(g.art["flash"], (mx - 2, my - 2))
+                else:
+                    pygame.draw.circle(surface, pal[14], (mx, my), 3)
+            else:
+                pygame.draw.circle(surface, pal[12 if g.frame_no & 2 else 14], (mx, my), 1 + int(level * 3))
         for e in self.explosions:
             e.draw(surface, sprites)
 
@@ -1456,8 +1512,10 @@ class TimeoutBeam(Entity):
 #             Each shot of Joe's that lands takes one of TURRET_HP hit points; it then explodes
 #             like any enemy. Like the original enemies it comes back when the room is re-entered.
 # ---------------------------------------------------------------------------
-PACK_TWIN, PACK_SHIELD = 1, 2
-PACK_NAMES = {PACK_TWIN: "TWIN SHOT", PACK_SHIELD: "SHIELD"}
+PACK_TWIN, PACK_SHIELD, PACK_CHARGE = 1, 2, 3
+PACK_NAMES = {PACK_TWIN: "TWIN SHOT", PACK_SHIELD: "SHIELD", PACK_CHARGE: "CHARGE SHOT"}
+CHARGE_TICKS = 1400              # hold fire this long (~1.2 s) for a charged shot
+CHARGE_SHOT_INTERVAL = 12        # ticks per 2 px step: a little faster than a shot (15)
 SHIELD_INVULN = 1750             # ticks (~1.5 s) Joe cannot die after his shield takes a hit
 TURRET_HP = 3
 TURRET_COOLDOWN = 1400           # ticks between turret shots (~1.2 s)
@@ -1466,6 +1524,36 @@ TURRET_RANGE_Y = 14              # px: Joe's centre must be this close to the tu
 TURRET_SHOT_INTERVAL = 12        # ticks per 2 px step (~194 px/s; Joe climbs at 116 px/s)
 SH_TURRET = 1000                 # a synthetic collision shape (SH00.DAT has 258): 8x9 half-res
 _SH_CACHE[SH_TURRET] = tuple((row, -4, 8) for row in range(-4, 5))   # = the 16x18 px body
+SH_CHARGE = 1001                 # the charged shot: 10x8 px
+_SH_CACHE[SH_CHARGE] = tuple((row, -2, 5) for row in range(-2, 2))
+SH_BIGBALL, SH_BIGRING = 1002, 1003   # the splitter's big ball: shape 16 at 1.5x (26x22 px) + ring
+_SH_CACHE[SH_BIGBALL] = ((-5, -3, 7), (-4, -4, 9), (-3, -5, 11), (-2, -6, 13), (-1, -6, 13),
+                         (0, -6, 13), (1, -6, 13), (2, -6, 13), (3, -5, 11), (4, -4, 9), (5, -3, 7))
+
+
+def shape_cells(shape, hx=0, hy=0):
+    """The half-res cells a collision shape covers at (hx, hy)."""
+    return {(hx + start + i, hy + row) for row, start, length in sh_shape(shape) for i in range(length)}
+
+
+def shape_ring(shape):
+    """The one-cell border around a shape (4-neighbours), as run-length rows like SH00.DAT.
+    shape_ring(16) is exactly shape 17, the ring the ball restores around itself."""
+    cells = shape_cells(shape)
+    ring = {(x + dx, y + dy) for x, y in cells for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1))} - cells
+    runs = []
+    for row in sorted({y for _, y in ring}):
+        xs = sorted(x for x, y in ring if y == row)
+        start = prev = xs[0]
+        for x in xs[1:] + [None]:
+            if x != prev + 1:
+                runs.append((row, start, prev - start + 1))
+                start = x
+            prev = x
+    return tuple(runs)
+
+
+_SH_CACHE[SH_BIGRING] = shape_ring(SH_BIGBALL)
 
 # Pixel art for the new objects: one hex digit per pixel = palette index 0-15 (the EGA colours
 # shared by every level palette), "." = transparent.
@@ -1483,6 +1571,30 @@ ART = {
         ".8EEEEEEEEEEE8",
         "..888888888888",
         "..8.........8.",
+    ),
+    "pack3": (                   # charge shot: a red pack with a lightning bolt
+        "..888888888888",
+        ".8CCCCCCCCCCC8",
+        "8CCCCCCEEECCC8",
+        "8CCCCCEEECCCC8",
+        "8CCCCEEEEEECC8",
+        "8CCCCCCEEECCC8",
+        "8CCCCCEEECCCC8",
+        "8CCCCEEECCCCC8",
+        "8CCCCEECCCCCC8",
+        ".8CCCCCCCCCCC8",
+        "..888888888888",
+        "..8.........8.",
+    ),
+    "bolt": (                    # the charged shot, 10x8
+        "...EEEE...",
+        ".EEFFFFEE.",
+        "EEFFFFFFEE",
+        "EFFFFFFFFE",
+        "EFFFFFFFFE",
+        "EEFFFFFFEE",
+        ".EEFFFFEE.",
+        "...EEEE...",
     ),
     "pack2": (                   # shield: a blue pack with a white ring
         "..888888888888",
@@ -1543,9 +1655,29 @@ def make_art(rows, pal, flip=False, white=False):
     return s
 
 
+def wreck_rows():
+    """32x24 rubble for a destroyed generator: a jagged dark heap with lighter chunks and holes."""
+    rnd = random.Random(5)
+    rows = []
+    for y in range(24):
+        row = ""
+        for x in range(32):
+            top = 4 + 3 * abs(((x // 4) % 3) - 1) + (x // 8) % 2       # a bumpy skyline
+            if y < top:
+                row += "."
+            elif y == top:
+                row += "7"
+            else:
+                row += "0" if rnd.random() < 0.08 else ("7" if rnd.random() < 0.2 else "8")
+        rows.append(row)
+    return tuple(rows)
+
+
 def build_art(pal):
     """The enhanced-mode surfaces in a level's palette."""
     art = {name: make_art(rows, pal) for name, rows in ART.items()}
+    art["wreck"] = make_art(wreck_rows(), pal)
+    art["bolt_hot"] = make_art(ART["bolt"], pal, white=True)
     art["turret_l"] = make_art(ART["turret"], pal, flip=True)
     art["turret_hit"] = make_art(ART["turret"], pal, white=True)
     art["turret_hit_l"] = make_art(ART["turret"], pal, flip=True, white=True)
@@ -1578,6 +1710,123 @@ class Pack(Entity):
     def draw(self, surface, sprites, frame):
         bob = (0, 0, -1, -2, -2, -2, -1, 0)[(frame >> 2) & 7]
         surface.blit(self.art, (self.x + 1, self.y + bob))
+
+
+class ChargedShot(Entity):
+    """The charge pack's shot (enhanced mode). A 10x8 bolt flying like a shot but a little
+    faster. It wrecks a generator or a turret it overlaps, kills a sentry, and pierces every
+    ordinary enemy: wherever it meets type-6 bytes it restores the backup under them (so the
+    ball, bird or orb explodes on its own next check) and flies on. Only a real wall stops it,
+    with the usual wall explosion. Mobile, so it crosses rooms like a shot."""
+    interval = CHARGE_SHOT_INTERVAL
+    mobile = True
+
+    def __init__(self, g, x, y, direction):
+        super().__init__(x, y, g.tick)
+        self.direction = direction
+        self.speed = direction * 4 - 2
+        self.room = g.current_room
+        self.art = g.art
+
+    def rect(self):
+        return (self.x - 5, self.y - 4, 10, 8)
+
+    @staticmethod
+    def overlaps(a, b):
+        return a[0] < b[0] + b[2] and a[0] + a[2] > b[0] and a[1] < b[1] + b[3] and a[1] + a[3] > b[1]
+
+    def update(self, g):
+        cbm, backup = g.cbm, g.cbm_bak
+        nx = self.x + self.speed
+        if self.cross(g, nx, self.y):
+            return
+        self.x = nx
+        hx, hy = nx >> 1, self.y >> 1
+        me = self.rect()
+        for e in list(g.entities):
+            if not e.alive:
+                continue
+            if isinstance(e, Generator) and not isinstance(e, DeadGenerator) and self.overlaps(me, e.rect()):
+                e.wreck(g)
+                self.stop(g)
+                return
+            if isinstance(e, Turret) and self.overlaps(me, (e.x - 8, e.y - 9, 16, 18)):
+                e.die(g)
+                self.stop(g)
+                return
+        total, hist = cb_check(cbm, SH_CHARGE, hx, hy, 0)
+        if total == 0 or total == hist[CT_JOE]:
+            return
+        if hist[CT_ENEMY]:
+            cb_restore_if(cbm, backup, SH_CHARGE, hx, hy, CT_ENEMY)   # they explode on their own check
+        if hist[CT_WALL]:
+            mine = shape_cells(SH_CHARGE, hx, hy)
+            walls = {c for c in mine if 0 <= c[0] < HALF_W and 0 <= c[1] < HALF_H
+                     and cbm[c[1] * HALF_W + c[0]] == CT_WALL}
+            for e in list(g.entities):
+                if isinstance(e, Sentry) and e.alive and e.visible == 1:
+                    cells = e.cells()
+                    if cells & mine:
+                        e.kill(g)
+                        walls -= cells
+            if walls:                                    # a real wall: stop here
+                self.stop(g)
+
+    def stop(self, g):
+        if self.visible == 1 and self.room == g.current_room:
+            g.player.explosions.append(Explosion(self.x, self.y))
+        self.alive = False
+
+    def draw(self, surface, sprites, frame):
+        surface.blit(self.art["bolt_hot" if frame & 2 else "bolt"], (self.x - 5, self.y - 4))
+
+
+class DeadGenerator(Generator):
+    """What is left of a generator a charged shot wrecked (enhanced mode): rubble over its 2x2
+    tile block. It does nothing. One is spawned in place of the generator on every later visit."""
+    interval = 1 << 30
+
+    def __init__(self, g, tile):
+        super().__init__(g, tile)
+        self.art = g.art["wreck"]
+
+    def draw_tiles(self, surface, tile_surfs):
+        surface.blit(self.art, (self.col * TILE_W, self.row * TILE_H))
+
+
+class BigBall(Ball):
+    """The splitter (enhanced mode): a ball at 1.5x size that runs the ball handler with the
+    bigger footprint SH_BIGBALL and its ring, slower (24 ticks a step instead of 16). When
+    anything disturbs its bytes it explodes like a ball and, if that happened live in Joe's
+    room, two ordinary balls take its place, one each side."""
+    interval = 24
+    SHAPE, RING, SPAWN_SHAPE = SH_BIGBALL, SH_BIGRING, SH_BIGBALL
+    _scaled = {}
+
+    def explode(self, g, cbm, backup, hx, hy):
+        here = self.visible == 1 and self.room == g.current_room
+        super().explode(g, cbm, backup, hx, hy)
+        if here:
+            for bx in (self.x - 14, self.x + 14):
+                if in_room(bx, self.y) and Ball.can_spawn(g, bx, self.y):
+                    g.entities.append(Ball(g, bx, self.y))
+
+    def draw(self, surface, sprites, frame):
+        sp = sprites[self.sprite_idx]
+        key = id(sp["surf"])
+        hit = self._scaled.get(key)
+        if hit is None or hit[0] is not sp["surf"]:
+            w, h = sp["surf"].get_size()
+            hit = (sp["surf"], pygame.transform.scale(sp["surf"], (w * 3 // 2, h * 3 // 2)))
+            self._scaled[key] = hit
+        surface.blit(hit[1], (self.x + sp["x_off"] * 3 // 2, self.y + sp["y_off"] * 3 // 2))
+
+
+class SplitterGen(BallGen):
+    """Object type 24 (enhanced mode): a ball generator that releases BigBalls, one every 12
+    updates once the first is out. Same tile animation as the ball generator."""
+    BALL = BigBall
+    REFILL = 12
 
 
 class TurretShot(Entity):
@@ -1653,9 +1902,7 @@ class Turret(Entity):
             self.hp -= 1
             self.hit_flash = 6
             if self.hp <= 0:
-                cb_restore_if(cbm, backup, SH_TURRET, hx, hy, CT_ENEMY)
-                g.entities.append(EnemyExplosion(g, self.x, self.y, None))
-                self.alive = False
+                self.die(g)
                 return
         self.write(cbm)                                # Joe overlapping it dies at his next check
         if g.death is not None or g.beam_in is not None or g.beam_out is not None:
@@ -1673,6 +1920,11 @@ class Turret(Entity):
         self.muzzle = 4
         g.entities.append(TurretShot(g, self.x + (12 if side else -12), self.y - 1, side))
         play_sound(SND_TURRET)
+
+    def die(self, g):
+        cb_restore_if(g.cbm, g.cbm_bak, SH_TURRET, self.x >> 1, self.y >> 1, CT_ENEMY)
+        g.entities.append(EnemyExplosion(g, self.x, self.y, None))
+        self.alive = False
 
     @staticmethod
     def line_of_sight(cbm, hx, hy, tx):
@@ -1722,6 +1974,7 @@ class JetPackJoe:
         self.frame_no = 0        # render frame number ([0x2361]) — drives sprite flicker
         self.entities = []       # enemies, generators, enemy explosions in the current room
         self.dormant = []        # mobile objects hidden in some room (slot visible=0), any room
+        self.destroyed = set()   # enhanced: (room, tile) of generators a charged shot wrecked
         self.last_room = None
         self.joe_marked = None   # the cbm Joe's type-14 marker is currently stamped in
         self.death = None        # Joe death animation state (GAME.EXE 0x0F05)
@@ -1892,7 +2145,7 @@ class JetPackJoe:
             else:
                 self.room_headers.append(b'\xff' * 8)
 
-    OBJ_PARAMS = {0:0,1:1,2:1,3:1,4:1,5:3,6:2,7:2,8:2,9:2,10:3,11:1,12:1,13:2,14:2,15:2,16:2,17:3,18:3,19:3,20:1,21:0,22:3,23:3}
+    OBJ_PARAMS = {0:0,1:1,2:1,3:1,4:1,5:3,6:2,7:2,8:2,9:2,10:3,11:1,12:1,13:2,14:2,15:2,16:2,17:3,18:3,19:3,20:1,21:0,22:3,23:3,24:1}
 
     def load_room_objects(self):
         """Parse objects from LVxx.DAT for each room."""
@@ -2425,7 +2678,7 @@ class JetPackJoe:
                 continue
             if e.room == self.current_room and e.next_time <= self.tick:
                 e.activate(self)
-                if self.enhanced and isinstance(e, (Shot, TurretShot)):
+                if self.enhanced and isinstance(e, (Shot, TurretShot, ChargedShot)):
                     self.catch_up(e)
                 if e.alive and e.visible == 1:
                     self.entities.append(e)
@@ -2470,7 +2723,7 @@ class JetPackJoe:
         self.beam_in = self.beam_out = None
         self.player.next_time = self.tick            # no beam-in wait when debugging
         self.death = None
-        self.entities = [e for e in self.entities if not isinstance(e, (Shot, TurretShot))]
+        self.entities = [e for e in self.entities if not isinstance(e, (Shot, TurretShot, ChargedShot))]
         self.player.explosions.clear()
         cbm = self.get_collision_bitmap(room)[0]
         px, py = int(self.player.x), int(self.player.y)
@@ -2508,12 +2761,19 @@ class JetPackJoe:
             self.init_room_object(obj)
             if t == 10 and obj.get("disappear", -1) < 0:
                 play_sound(SND_HELP)                      # 0x1406: captive init
-            if t in (11, 12, 14, 20, 23) and not self.enemies_enabled:
+            if t in (11, 12, 14, 20, 23, 24) and not self.enemies_enabled:
                 continue                                  # debug: --no-enemies / E key
             if t in (22, 23):                             # enhanced mode: pack / turret
                 var = obj["params"][1 if t == 23 else 2] if len(obj["params"]) > 2 else 0
                 if self.enhanced and self.switch_state[var] != 0:
                     self.entities.append((Turret if t == 23 else Pack)(self, obj))
+                continue
+            if t in (11, 12, 20, 24) and self.enhanced and (room, tile) in self.destroyed:
+                self.entities.append(DeadGenerator(self, tile))   # wrecked by a charged shot
+                continue
+            if t == 24:                                   # enhanced mode: splitter generator
+                if self.enhanced:
+                    self.entities.append(SplitterGen(self, tile))
                 continue
             if t == 14:
                 var_id = obj["params"][1] if len(obj["params"]) > 1 else 0
@@ -2716,6 +2976,8 @@ class JetPackJoe:
 
     def set_level(self, level):
         if 0 <= level < len(self.levels):
+            if level != self.current_level:
+                self.destroyed = set()      # enhanced: wrecked generators stay wrecked through deaths
             self.current_level = level
             self.build_assets()
             self.current_room = self.start_room

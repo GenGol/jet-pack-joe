@@ -30,7 +30,7 @@ def test_original_levels_contain_no_enhanced_objects():
     for lvl in range(3):
         d.g.set_level(lvl)
         found = [(room, o["type"]) for room, objs in d.g.room_objects.items()
-                 for o in objs if o["type"] in (22, 23)]
+                 for o in objs if o["type"] in (22, 23, 24)]
         assert not found, f"level {lvl + 1}: {found}"
 
 
@@ -272,6 +272,190 @@ def test_turret_bullet_still_kills_joe_when_a_sentry_is_elsewhere():
     g.entities.append(J.TurretShot(g, 150, TURRET_Y - 1, 0))
     d.run(200, until=lambda g: g.death is not None)
     assert g.death is not None and d.entities(J.Sentry)[0].alive
+
+
+CHARGE_FRAMES = int(J.CHARGE_TICKS / J.TICKS_PER_FRAME) + 2
+GEN_ROOM = 3
+BALLGEN_X, BALLGEN_Y = 3 * 16 + 15, 3 * 12 + 11          # centre of the ball generator's block
+
+
+def hover_until(d, g, frames, altitude, cond, keys=()):
+    """hover() that stops once cond(g) holds; returns whether it did."""
+    for _ in range(frames):
+        if cond(g):
+            return True
+        d.run(1, set(keys) | ({"thrust"} if g.player.y > altitude else set()))
+    return cond(g)
+
+
+def charge_and_release(d, g, altitude):
+    """Hold fire for a full charge while hovering at `altitude`, then let go (one frame)."""
+    hover(d, g, CHARGE_FRAMES + 1, altitude, keys={"fire"})
+    assert g.player.charge_level(g) >= 1.0
+    hover(d, g, 1, altitude)
+
+
+def gen_room(keep=None):
+    """Room 3 with the charge pack in hand, keeping only the generators of class `keep`."""
+    d = Driver(level_file=LEVEL)
+    d.goto(3, GEN_ROOM)
+    g = d.g
+    if keep is not None:
+        g.entities = [e for e in g.entities if type(e) is keep]    # SplitterGen is a BallGen too
+    for e in g.entities:
+        if isinstance(e, J.BallGen):
+            e.countdown = 60                                   # no ball while Joe charges
+    g.player.pack = J.PACK_CHARGE
+    return d, g
+
+
+def test_charge_shot_needs_a_full_hold_and_does_not_repeat():
+    """Press: one ordinary shot. Holding does not auto-repeat (the original fires every 0xC8
+    ticks); letting go early fires nothing more; holding CHARGE_TICKS then letting go fires
+    the charged shot."""
+    d, g = armoury(enemies=False)
+    d.place(160, 60)
+    g.player.pack = J.PACK_CHARGE
+    d.run(1, keys={"fire"})
+    assert len(d.entities(J.Shot)) == 1
+    d.run(25, keys={"fire"})                              # > FIRE_REPEAT: no second shot
+    assert len(d.entities(J.Shot)) == 1 and g.player.charging is not None
+    d.run(1)                                              # released early
+    assert not d.entities(J.ChargedShot) and g.player.charging is None
+    d.run(1, keys={"fire"})
+    d.run(CHARGE_FRAMES, keys={"fire"})
+    assert g.player.charge_level(g) >= 1.0
+    d.run(1)
+    bolts = d.entities(J.ChargedShot)
+    assert len(bolts) == 1 and bolts[0].speed > 0 and J.SND_CHARGE in g.sound.history
+    assert len(d.entities(J.Shot)) <= 1
+
+
+def test_charged_shot_wrecks_a_generator_for_the_level():
+    """Cam: destructible generators give the packs a purpose. The wreck survives leaving and
+    re-entering the room, and a death, but a new level starts clean."""
+    d, g = gen_room(keep=J.BallGen)
+    gen = d.entities(J.BallGen)[0]
+    assert (gen.x, gen.y) == (BALLGEN_X, BALLGEN_Y)
+    d.place(BALLGEN_X + 60, BALLGEN_Y - 2)
+    g.player.direction = 0
+    charge_and_release(d, g, BALLGEN_Y - 2)
+    assert d.entities(J.ChargedShot)
+    hover_until(d, g, 60, BALLGEN_Y - 2, lambda g: not gen.alive)
+    assert not gen.alive and (GEN_ROOM, gen.tile) in g.destroyed
+    assert d.entities(J.DeadGenerator) and d.entities(J.EnemyExplosion)
+    assert not d.entities(J.ChargedShot), "the bolt is spent on the generator"
+    g.last_room = None                                    # re-enter the room
+    d.run(1)
+    assert not [e for e in g.entities if type(e) is J.BallGen] and len(d.entities(J.DeadGenerator)) == 1
+    assert len([e for e in g.entities if isinstance(e, J.Generator)]) == 4, "the other three are untouched"
+    g.set_level(3)                                        # a death restarts the level: still wrecked
+    assert (GEN_ROOM, gen.tile) in g.destroyed
+    g.set_level(0)
+    assert not g.destroyed, "a new level starts with every generator intact"
+
+
+def test_ordinary_shots_leave_generators_alone():
+    d, g = gen_room(keep=J.BallGen)
+    gen = d.entities(J.BallGen)[0]
+    d.place(BALLGEN_X + 60, BALLGEN_Y - 2)
+    g.player.direction = 0
+    g.player.pack = J.PACK_TWIN
+    hover(d, g, 1, BALLGEN_Y - 2, keys={"fire"})
+    hover(d, g, 60, BALLGEN_Y - 2)
+    assert gen.alive and not g.destroyed
+
+
+def test_charged_shot_pierces_a_ball_and_flies_on():
+    d, g = armoury(enemies=False)
+    d.place(60, 60)
+    g.player.direction = 0                                # the press's ordinary shot goes left
+    g.player.pack = J.PACK_CHARGE
+    hover(d, g, 1, 60, keys={"fire"})
+    g.player.direction = 1
+    ball = J.Ball(g, 200, 60)
+    g.entities.append(ball)
+    hover(d, g, CHARGE_FRAMES, 60, keys={"fire"})
+    hover(d, g, 1, 60)
+    bolt = d.entities(J.ChargedShot)[0]
+    assert hover_until(d, g, 90, 60, lambda g: not ball.alive), "the bolt should pop the ball"
+    hit_x = bolt.x
+    hover(d, g, 8, 60)
+    assert bolt.alive and bolt.x > hit_x + 20, "the bolt keeps going past the ball"
+    assert d.entities(J.EnemyExplosion) and g.death is None
+
+
+def test_charged_shot_destroys_the_turret_outright():
+    d, g = armoury()
+    d.place(TURRET_X + 70, FLOOR_Y)
+    g.player.direction = 0
+    g.player.pack = J.PACK_CHARGE
+    turret = d.entities(J.Turret)[0]
+    d.run(CHARGE_FRAMES + 1, keys={"fire"})               # on the floor, inside the warm-up
+    d.run(1)
+    d.run(60, until=lambda g: not turret.alive or g.death is not None)
+    assert not turret.alive and g.death is None and turret.check(g.cbm, 0)[0] == 0
+
+
+def test_big_ball_splits_in_two_when_shot():
+    """The splitter's ball runs the ball handler with a 1.5x footprint; a shot's erase makes it
+    explode like a ball, and two ordinary balls appear either side of it."""
+    assert J.shape_ring(16) == J.sh_shape(17), "the ring helper reproduces SH00.DAT's shape 17"
+    d, g = armoury(enemies=False)
+    d.place(60, 60)
+    g.player.direction = 1
+    big = J.BigBall(g, 200, 60)
+    g.entities.append(big)
+    cells = len(J.shape_cells(J.SH_BIGBALL))
+    assert cells == 119 and J.cb_check(g.cbm, J.SH_BIGBALL, big.x >> 1, big.y >> 1, 0)[1][J.CT_ENEMY] == cells
+    hover(d, g, 1, 60, keys={"fire"})
+    hover_until(d, g, 90, 60, lambda g: not big.alive)
+    assert not big.alive, "the shot should pop the big ball"
+    small = d.entities(J.Ball)
+    assert len(small) == 2 and all(type(b) is J.Ball for b in small), f"two small balls: {small}"
+    assert sorted(abs(b.x - big.x) for b in small) == [14, 14]
+    assert d.entities(J.EnemyExplosion) and g.death is None
+
+
+def test_charged_shot_vaporises_a_big_ball():
+    """The bolt pops the big ball, the two small balls spawn either side of it, and the bolt,
+    still flying through, wipes both: an ordinary shot splits a big ball, a charged shot ends it."""
+    d, g = armoury(enemies=False)
+    d.place(60, 60)
+    g.player.direction = 0
+    g.player.pack = J.PACK_CHARGE
+    hover(d, g, 1, 60, keys={"fire"})
+    g.player.direction = 1
+    big = J.BigBall(g, 220, 60)
+    g.entities.append(big)
+    hover(d, g, CHARGE_FRAMES, 60, keys={"fire"})
+    hover(d, g, 1, 60)
+    assert hover_until(d, g, 90, 60, lambda g: not big.alive)
+    hover(d, g, 6, 60)
+    assert not [b for b in g.entities if isinstance(b, J.Ball) and b.alive], "nothing left of it"
+    assert len(d.entities(J.EnemyExplosion)) == 3 and g.death is None
+
+
+def test_splitter_generator_releases_big_balls():
+    d, g = gen_room(keep=J.SplitterGen)
+    assert len(d.entities(J.SplitterGen)) == 1
+    d.entities(J.SplitterGen)[0].countdown = 4
+    d.place(290, FLOOR_Y)
+    d.run(130, until=lambda g: any(isinstance(e, J.BigBall) for e in g.entities))
+    assert d.entities(J.BigBall) and g.death is None
+    d.run(1)
+    assert d.entities(J.BigBall)[0].room == GEN_ROOM
+
+
+def test_classic_mode_has_no_splitter_or_charge():
+    d = Driver(level_file=LEVEL, enhanced=False)
+    d.goto(3, GEN_ROOM)
+    assert not d.entities(J.SplitterGen) and not d.entities(J.Pack)
+    assert len([e for e in d.g.entities if isinstance(e, J.Generator)]) == 3
+    d.g.player.pack = J.PACK_CHARGE
+    d.run(1, keys={"fire"})
+    d.run(25, keys={"fire"})
+    assert len(d.entities(J.Shot)) == 3, "classic mode keeps the 0xC8-tick auto-repeat"
 
 
 def test_status_bar_shows_the_pack():

@@ -137,7 +137,7 @@ class Driver:
 
 def enemy_rooms(g):
     """{level: {room: [type names]}} for every room with an enemy or generator object."""
-    names = {11: "birds", 12: "balls", 13: "glow", 14: "sentry", 20: "orbs"}
+    names = {11: "birds", 12: "balls", 13: "glow", 14: "sentry", 20: "orbs", 24: "splitters"}
     out = {}
     for lvl in range(3):
         g.set_level(lvl)

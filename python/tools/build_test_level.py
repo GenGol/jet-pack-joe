@@ -180,6 +180,9 @@ def build():
     r.obj(11, 9, 12)
     r.stamp("orbgen", 15, 3)
     r.obj(20, 15, 3)
+    r.stamp("ballgen", 9, 4)
+    r.obj(24, 9, 4)                          # enhanced: splitter generator (big balls that split in two)
+    r.obj(22, 6, 13, 3, 27)                  # enhanced: charge-shot pack (kind 3), var 27 — wrecks generators
 
     # ---- Room 4: sentry, doors with sensor pads ----
     r = rooms[4]
